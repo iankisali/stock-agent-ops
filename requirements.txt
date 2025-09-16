@@ -1,0 +1,11 @@
+pandas 
+numpy
+scikit-learn
+matplotlib
+torch
+yfinance
+mlflow
+onnxruntime
+comet-ml
+fastapi
+uvicorn
