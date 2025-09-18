@@ -9,3 +9,6 @@ onnxruntime
 comet-ml
 fastapi
 uvicorn
+python-dotenv
+onnx
+aiofiles

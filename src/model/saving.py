@@ -4,12 +4,14 @@ import torch
 import mlflow
 import mlflow.pytorch
 import mlflow.onnx
-import onnx
+import onnxruntime as ort
 from typing import Optional, Tuple
 from sklearn.preprocessing import StandardScaler
 from src.exception import PipelineError
 from src.model.export import model_to_onnx      
 from src.logger import get_logger
+import onnxruntime as ort
+import onnx
 
 logger = get_logger()
 

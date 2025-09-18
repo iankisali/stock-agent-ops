@@ -9,6 +9,9 @@ from src.data.ingestion import fetch_ohlcv
 from src.utils import save_json
 from .saving import load_model
 from src.logger import get_logger
+import onnxruntime as ort
+import pandas as pd
+from sklearn.preprocessing import StandardScaler
 
 logger = get_logger()
 

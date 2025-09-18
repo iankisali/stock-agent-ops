@@ -5,6 +5,8 @@ from typing import Dict
 from src.config import Config
 from src.exception import PipelineError
 from src.logger import get_logger
+import onnxruntime as ort
+from sklearn.preprocessing import StandardScaler
 
 logger = get_logger()
 

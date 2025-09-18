@@ -1,5 +1,6 @@
 import torch.nn as nn
 from src.config import Config
+import torch
 
 class LSTMModel(nn.Module):
     """LSTM model for stock price prediction."""

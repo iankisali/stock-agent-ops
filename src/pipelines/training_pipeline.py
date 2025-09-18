@@ -1,7 +1,10 @@
 import torch
 from typing import Dict
 import mlflow
+import mlflow.pytorch
 import os
+from dotenv import load_dotenv
+import pickle
 from sklearn.preprocessing import StandardScaler
 from torch.utils.data import DataLoader
 from src.config import Config
@@ -15,6 +18,15 @@ from src.model.evaluation import evaluate_model
 from src.inference import predict_one_step_and_week
 from src.utils import save_json, plot_outputs
 from src.logger import get_logger
+
+# Load environment variables from .env file
+load_dotenv()
+
+# Set MLflow tracking URI from .env
+mlflow_tracking_uri = os.getenv("MLFLOW_TRACKING_URI")
+if not mlflow_tracking_uri:
+    raise ValueError("MLFLOW_TRACKING_URI not set in .env file")
+mlflow.set_tracking_uri(mlflow_tracking_uri)
 
 logger = get_logger()
 
@@ -45,15 +57,37 @@ def train_parent(ticker: str = Config().parent_ticker, start: str = Config().sta
 
             model = LSTMModel()
             model = fit_model(model, train_loader, val_loader, epochs=epochs, lr=1e-3)
+            
+            # Save model to filesystem (for backward compatibility)
             save_model(model, scaler, out_dir, model_type="parent", ticker=ticker)
+            
+            # Log scaler as MLflow artifact
+            scaler_path = os.path.join(out_dir, f"{ticker}_parent_scaler.pkl")
+            with open(scaler_path, "wb") as f:
+                pickle.dump(scaler, f)
+            mlflow.log_artifact(scaler_path, f"scalers/{ticker}")
+            
+            # Log model to MLflow
+            mlflow.pytorch.log_model(model, f"parent_model_{ticker}")
+            
+            # Register model in MLflow model registry
+            model_uri = f"runs:/{run.info.run_id}/parent_model_{ticker}"
+            registered_model = mlflow.register_model(model_uri, f"ParentModel_{ticker}")
+            
             session = load_model(out_dir, "parent")[0]
             metrics = evaluate_model(session, df, scaler, out_dir, ticker.replace("^", ""))
             payload = predict_one_step_and_week(session, df, scaler, ticker)
             json_filename = f"{ticker}_parent_forecast.json"
             json_path = save_json(payload, os.path.join(out_dir, json_filename))
+            mlflow.log_artifact(json_path, f"forecasts/{ticker}")
             plot_outputs(df, payload, out_dir, ticker)
-            logger.info(f"Parent model trained successfully for {ticker}")
-            return {"checkpoint": out_dir, "json": json_path}
+            logger.info(f"Parent model trained and registered successfully for {ticker}")
+            return {
+                "checkpoint": out_dir,
+                "json": json_path,
+                "model_name": f"ParentModel_{ticker}",
+                "model_version": registered_model.version
+            }
         except Exception as e:
             mlflow.log_param("error", str(e))
             logger.error(f"Parent model training failed for {ticker}: {e}")
@@ -100,15 +134,34 @@ def train_child(ticker: str, start: str = Config().start_date, epochs: int = Con
             child_model = fit_model(parent_model, train_loader, val_loader, epochs=epochs, lr=3e-4)
             child_dir = os.path.join(workdir, ticker)
             save_model(child_model, scaler, child_dir, model_type="child", ticker=ticker)
-
+            
+            # Log scaler as MLflow artifact
+            scaler_path = os.path.join(child_dir, f"{ticker}_child_scaler.pkl")
+            with open(scaler_path, "wb") as f:
+                pickle.dump(scaler, f)
+            mlflow.log_artifact(scaler_path, f"scalers/{ticker}")
+            
+            # Log model to MLflow
+            mlflow.pytorch.log_model(child_model, f"child_model_{ticker}")
+            
+            # Register model in MLflow model registry
+            model_uri = f"runs:/{run.info.run_id}/child_model_{ticker}"
+            registered_model = mlflow.register_model(model_uri, f"ChildModel_{ticker}")
+            
             session = load_model(child_dir, "child", ticker)[0]
             payload = predict_one_step_and_week(session, df, scaler, ticker)
             json_filename = f"{ticker}_child_forecast.json"
             json_path = save_json(payload, os.path.join(child_dir, json_filename))
+            mlflow.log_artifact(json_path, f"forecasts/{ticker}")
             plot_outputs(df, payload, child_dir, ticker)
             evaluate_model(session, df, scaler, child_dir, ticker)
-            logger.info(f"Child model trained successfully for {ticker}")
-            return {"checkpoint": child_dir, "json": json_path}
+            logger.info(f"Child model trained and registered successfully for {ticker}")
+            return {
+                "checkpoint": child_dir,
+                "json": json_path,
+                "model_name": f"ChildModel_{ticker}",
+                "model_version": registered_model.version
+            }
         except Exception as e:
             mlflow.log_param("error", str(e))
             logger.error(f"Child model training failed for {ticker}: {e}")

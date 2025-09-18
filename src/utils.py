@@ -12,6 +12,10 @@ from src.logger import get_logger
 
 logger = get_logger()
 
+def get_config():
+    """Provide Config instance."""
+    return Config()
+
 def initialize_dirs():
     """Initialize output directories."""
     config = Config()
@@ -37,7 +41,7 @@ def save_json(payload: Dict, path: str) -> str:
         raise PipelineError(f"Failed to save JSON at {path}: {e}")
 
 def plot_outputs(df: pd.DataFrame, payload: Dict, out_dir: str, ticker: str, return_base64: bool = False):
-    """Plot historical and forecasted prices with continuous prediction line (Visualization/Monitoring Stage)."""
+    """Plot the last 14 days of historical prices and forecasted prices with a continuous prediction line."""
     try:
         if "error" in payload:
             logger.error(f"Cannot plot for {ticker}: prediction failed with error {payload['error']}")
@@ -46,8 +50,16 @@ def plot_outputs(df: pd.DataFrame, payload: Dict, out_dir: str, ticker: str, ret
         os.makedirs(out_dir, exist_ok=True)
         plt.figure(figsize=(12, 5))
         
-        # Plot historical closes
-        plt.plot(df["date"], df["Close"], label="Historical Close", color='blue')
+        # Ensure the 'date' column is in datetime format
+        df['date'] = pd.to_datetime(df['date'])
+        
+        # Slice the DataFrame to the last 14 days
+        last_date = df['date'].max()
+        start_date = last_date - pd.Timedelta(days=13)  # 14 days including start and end
+        df_last_14 = df[df['date'] >= start_date].copy()
+        
+        # Plot historical closes for the last 14 days
+        plt.plot(df_last_14["date"], df_last_14["Close"], label="Historical Close (Last 14 Days)", color='blue')
         
         # Extract forecast closes for continuous line
         forecast_closes = []
@@ -60,7 +72,7 @@ def plot_outputs(df: pd.DataFrame, payload: Dict, out_dir: str, ticker: str, ret
         print(f"Forecast closes for {ticker}: {forecast_closes}")
         
         # Last historical close
-        last_close = float(df["Close"].iloc[-1])
+        last_close = float(df_last_14["Close"].iloc[-1])
         print(f"Last historical close for {ticker}: {last_close}")
         
         # Dates for forecast
@@ -73,7 +85,7 @@ def plot_outputs(df: pd.DataFrame, payload: Dict, out_dir: str, ticker: str, ret
         plt.plot(plot_dates, plot_closes, 'm--', label="Forecast Close (Next 5 Days)")
         
         plt.legend()
-        plt.title(f"{ticker} Historical and Forecasted Close Prices (Next 5 Days)")
+        plt.title(f"{ticker} Historical (Last 14 Days) and Forecasted Close Prices (Next 5 Days)")
         plt.xlabel("Date")
         plt.ylabel("Close Price")
         plt.grid(True)
@@ -86,7 +98,7 @@ def plot_outputs(df: pd.DataFrame, payload: Dict, out_dir: str, ticker: str, ret
             plt.close()
             return img_base64
         
-        plot_filename = f"{ticker}_history_forecast.png"
+        plot_filename = f"{ticker}_history_forecast_14days.png"
         plot_path = os.path.join(out_dir, plot_filename)
         plt.savefig(plot_path)
         plt.close()
