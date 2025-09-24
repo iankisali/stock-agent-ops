@@ -10,9 +10,9 @@ wheels/
 .venv
 
 # MLflow
-mlruns
+mlruns/
 mlflow.db
-mlartifacts
+mlartifacts/
 
 # Logs
 logs

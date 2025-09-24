@@ -15,11 +15,12 @@ from src.utils import save_json
 from src.pipelines.training_pipeline import train_child
 from src.logger import get_logger
 import mlflow
+from mlflow.tracking import MlflowClient
 
 # Load environment variables from .env file
 load_dotenv()
 
-# Set MLflow tracking URI from .env (needed for model registry access)
+# Set MLflow tracking URI from .env
 mlflow_tracking_uri = os.getenv("MLFLOW_TRACKING_URI")
 if not mlflow_tracking_uri:
     raise ValueError("MLFLOW_TRACKING_URI not set in .env file")
@@ -27,19 +28,24 @@ mlflow.set_tracking_uri(mlflow_tracking_uri)
 
 logger = get_logger()
 
-def load_model_from_registry(model_name: str, version: str = "latest"):
-    """Load model and scaler from MLflow model registry."""
+def load_model_from_registry(model_name: str, stage: str = "Production"):
+    """Load model and scaler from MLflow model registry for the specified stage."""
     try:
-        model_uri = f"models:/{model_name}/{version}"
-        model = mlflow.onnx.load_model(model_uri)
-        # Load scaler from artifacts
-        client = mlflow.tracking.MlflowClient()
-        run_id = client.get_latest_versions(model_name, stages=["None", "Production", "Staging"])[0].run_id
-        scaler_path = client.download_artifacts(run_id, f"scalers/{model_name.split('_')[-1]}/{model_name.split('_')[-1]}_child_scaler.pkl")
-        with open(scaler_path, "rb") as f:
-            scaler = pickle.load(f)
-        return model, scaler
+        client = MlflowClient()
+        versions = client.search_model_versions(f"name='{model_name}'")
+        for version in versions:
+            if version.current_stage == stage:
+                model_uri = f"models:/{model_name}/{version.version}"
+                model = mlflow.pytorch.load_model(model_uri)  # Use PyTorch instead of ONNX
+                run_id = version.run_id
+                scaler_path = client.download_artifacts(run_id, f"scalers/{model_name.split('_')[-1]}/{model_name.split('_')[-1]}_child_scaler.pkl")
+                with open(scaler_path, "rb") as f:
+                    scaler = pickle.load(f)
+                logger.info(f"Loaded {stage} model {model_name} version {version.version} from MLflow registry")
+                return model, scaler, version.version
+        raise FileNotFoundError(f"No {stage} model found for {model_name} in MLflow registry")
     except Exception as e:
+        logger.error(f"Failed to load model {model_name} from MLflow registry: {e}")
         raise FileNotFoundError(f"Failed to load model {model_name} from MLflow registry: {e}")
 
 def plot_outputs(df: pd.DataFrame, payload: Dict, out_dir: str, ticker: str, return_base64: bool = False):
@@ -71,11 +77,11 @@ def plot_outputs(df: pd.DataFrame, payload: Dict, out_dir: str, ticker: str, ret
                 logger.error(f"Invalid close value in full_forecast for {ticker}: {close}")
                 raise PipelineError(f"Invalid close value in full_forecast for {ticker}: {close}")
             forecast_closes.append(float(close))
-        print(f"Forecast closes for {ticker}: {forecast_closes}")
+        logger.debug(f"Forecast closes for {ticker}: {forecast_closes}")
         
         # Last historical close
         last_close = float(df_last_14["Close"].iloc[-1])
-        print(f"Last historical close for {ticker}: {last_close}")
+        logger.debug(f"Last historical close for {ticker}: {last_close}")
         
         # Dates for forecast
         last_date = pd.to_datetime(payload["last_date"])
@@ -104,7 +110,7 @@ def plot_outputs(df: pd.DataFrame, payload: Dict, out_dir: str, ticker: str, ret
         plot_path = os.path.join(out_dir, plot_filename)
         plt.savefig(plot_path)
         plt.close()
-        print(f"Plot saved for {ticker} at {plot_path}")
+        logger.info(f"Plot saved for {ticker} at {plot_path}")
         return plot_path
     except Exception as e:
         logger.error(f"Plotting failed for {ticker}: {e}")
@@ -114,14 +120,15 @@ def predict_child(ticker: str, parent_dir: str = Config().parent_dir, workdir: s
     """Predict using child model (Inference and Viz Stage)."""
     try:
         child_dir = os.path.join(workdir, ticker)
-        # Try loading from MLflow model registry
+        # Try loading from MLflow model registry (Production stage)
         try:
-            session, scaler = load_model_from_registry(f"ChildModel_{ticker}")
-            print(f"Loaded model for {ticker} from MLflow registry")
+            session, scaler, version = load_model_from_registry(f"ChildModel_{ticker}", stage="Production")
+            logger.info(f"Loaded Production model for {ticker} from MLflow registry")
         except FileNotFoundError:
             # Fallback to filesystem
             session, scaler = load_model(path=child_dir, model_type="child", ticker=ticker)
-            print(f"Loaded model for {ticker} from filesystem: {child_dir}")
+            logger.info(f"Loaded model for {ticker} from filesystem: {child_dir}")
+            version = "N/A"
             
         df = fetch_ohlcv(ticker)
         payload = predict_one_step_and_week(session, df, scaler, ticker)
@@ -133,7 +140,12 @@ def predict_child(ticker: str, parent_dir: str = Config().parent_dir, workdir: s
             payload["plot_base64"] = plot_base64
         else:
             plot_path = plot_outputs(df, payload, child_dir, ticker)
-        return payload
+        
+        return {
+            "ticker": ticker,
+            "predictions": payload,
+            "model_version": version
+        }
     except Exception as e:
         logger.error(f"Prediction failed for {ticker}: {e}")
         return {"ticker": ticker, "error": str(e)}
@@ -151,26 +163,31 @@ def infer_child_stock(
     child_dir = os.path.join(workdir, ticker)
     
     try:
-        # Try loading from MLflow model registry
-        session, scaler = load_model_from_registry(f"ChildModel_{ticker}")
-        print(f"Loaded model for {ticker} from MLflow registry")
+        # Try loading from MLflow model registry (Production stage)
+        session, scaler, version = load_model_from_registry(f"ChildModel_{ticker}", stage="Production")
+        logger.info(f"Loaded Production model for {ticker} from MLflow registry")
     except FileNotFoundError as e:
         if train_if_not_exists:
-            print(f"Model for {ticker} not found in MLflow registry or filesystem. Training now...")
+            logger.info(f"No Production model found for {ticker} in MLflow registry. Training now...")
             try:
                 train_summary = train_child(ticker, start, epochs, parent_dir, workdir)
                 child_dir = train_summary["checkpoint"]
                 session, scaler = load_model(path=child_dir, model_type="child", ticker=ticker)
+                version = train_summary["model_version"]
             except Exception as e:
                 raise PipelineError(f"Failed to train child model for {ticker}: {e}")
         else:
             raise PipelineError(f"Child model for {ticker} not found in MLflow registry or {child_dir}.") from e
     
-    print(f"Running inference for {ticker}...")
+    logger.info(f"Running inference for {ticker}...")
     df = fetch_ohlcv(ticker, start)
     predictions = predict_one_step_and_week(session, df, scaler, ticker)
     
-    output = {"ticker": ticker, "predictions": predictions}
+    output = {
+        "ticker": ticker,
+        "predictions": predictions,
+        "model_version": version
+    }
     
     if return_base64_plot:
         plot_base64 = plot_outputs(df, predictions, child_dir, ticker, return_base64=True)
