@@ -16,7 +16,7 @@ from src.model.training import fit_model
 from src.model.saving import save_model, load_model
 from src.model.evaluation import evaluate_model
 from src.inference import predict_one_step_and_week
-from src.utils import save_json, plot_outputs
+from src.utils import save_json
 from src.logger import get_logger
 
 # Load environment variables from .env file
@@ -80,13 +80,14 @@ def train_parent(ticker: str = Config().parent_ticker, start: str = Config().sta
             json_filename = f"{ticker}_parent_forecast.json"
             json_path = save_json(payload, os.path.join(out_dir, json_filename))
             mlflow.log_artifact(json_path, f"forecasts/{ticker}")
-            plot_outputs(df, payload, out_dir, ticker)
+            # plot_outputs(df, payload, out_dir, ticker)
             logger.info(f"Parent model trained and registered successfully for {ticker}")
             return {
                 "checkpoint": out_dir,
                 "json": json_path,
                 "model_name": f"ParentModel_{ticker}",
-                "model_version": registered_model.version
+                "model_version": registered_model.version,
+                "metrics": metrics
             }
         except Exception as e:
             mlflow.log_param("error", str(e))
@@ -153,7 +154,7 @@ def train_child(ticker: str, start: str = Config().start_date, epochs: int = Con
             json_filename = f"{ticker}_child_forecast.json"
             json_path = save_json(payload, os.path.join(child_dir, json_filename))
             mlflow.log_artifact(json_path, f"forecasts/{ticker}")
-            plot_outputs(df, payload, child_dir, ticker)
+            # plot_outputs(df, payload, child_dir, ticker)
             evaluate_model(session, df, scaler, child_dir, ticker)
             logger.info(f"Child model trained and registered successfully for {ticker}")
             return {
