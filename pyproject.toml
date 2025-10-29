@@ -7,6 +7,7 @@ requires-python = ">=3.11"
 dependencies = [
     "aiofiles>=24.1.0",
     "comet-ml>=3.52.1",
+    "dagshub>=0.6.3",
     "fastapi>=0.116.1",
     "matplotlib>=3.10.6",
     "mlflow>=3.3.2",
@@ -14,6 +15,7 @@ dependencies = [
     "onnx>=1.19.0",
     "onnxruntime>=1.22.1",
     "pandas>=2.3.2",
+    "prometheus-fastapi-instrumentator>=7.1.0",
     "python-dotenv>=1.1.1",
     "redis>=6.4.0",
     "scikit-learn>=1.7.2",

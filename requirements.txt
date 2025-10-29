@@ -6,9 +6,11 @@ torch
 yfinance
 mlflow
 onnxruntime
-comet-ml
 fastapi
 uvicorn
 python-dotenv
 onnx
 aiofiles
+redis
+prometheus-fastapi-instrumentator
+dagshub

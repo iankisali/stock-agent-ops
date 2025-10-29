@@ -9,9 +9,52 @@ from typing import Dict
 from src.config import Config
 from src.exception import PipelineError
 from src.logger import get_logger
+from dotenv import load_dotenv
 
 
 logger = get_logger()
+
+def setup_dagshub_mlflow():
+    """Initialize DagsHub for remote MLflow tracking with automatic fallback to local tracking."""
+    load_dotenv()
+    
+    dagshub_user = os.getenv("DAGSHUB_USER_NAME")
+    dagshub_repo = os.getenv("DAGSHUB_REPO_NAME")
+    dagshub_token = os.getenv("DAGSHUB_TOKEN")
+    mlflow_tracking_uri = os.getenv("MLFLOW_TRACKING_URI")
+    
+    # Check if DagsHub credentials are provided and not placeholder values
+    if dagshub_user and dagshub_repo and dagshub_token and \
+       dagshub_user != "your_dagshub_username" and dagshub_token != "your_dagshub_token":
+        try:
+            import dagshub
+            dagshub.init(repo_owner=dagshub_user, repo_name=dagshub_repo, mlflow=True)
+            
+            # Set DagsHub MLflow tracking URI
+            dagshub_mlflow_uri = f"https://dagshub.com/{dagshub_user}/{dagshub_repo}.mlflow"
+            mlflow.set_tracking_uri(dagshub_mlflow_uri)
+            
+            # Set DagsHub credentials for authentication
+            os.environ['MLFLOW_TRACKING_USERNAME'] = dagshub_user
+            os.environ['MLFLOW_TRACKING_PASSWORD'] = dagshub_token
+            
+            logger.info(f"✓ DagsHub MLflow tracking initialized: {dagshub_mlflow_uri}")
+            return True
+        except ImportError:
+            logger.warning("dagshub package not installed. Install with: pip install dagshub")
+            logger.info("Falling back to local MLflow tracking")
+        except Exception as e:
+            logger.warning(f"Failed to initialize DagsHub: {e}")
+            logger.info("Falling back to local MLflow tracking")
+    
+    # Fallback to local MLflow tracking
+    if mlflow_tracking_uri:
+        mlflow.set_tracking_uri(mlflow_tracking_uri)
+        logger.info(f"✓ Using local MLflow tracking: {mlflow_tracking_uri}")
+    else:
+        logger.warning("MLFLOW_TRACKING_URI not set in .env file. Using default MLflow tracking.")
+    
+    return False
 
 def initialize_dirs():
     """Initialize output directories."""

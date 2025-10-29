@@ -16,17 +16,14 @@ from src.model.training import fit_model
 from src.model.saving import save_model, load_model
 from src.model.evaluation import evaluate_model
 from src.inference import predict_one_step_and_week
-from src.utils import save_json
+from src.utils import save_json, setup_dagshub_mlflow
 from src.logger import get_logger
 
 # Load environment variables from .env file
 load_dotenv()
 
-# Set MLflow tracking URI from .env
-mlflow_tracking_uri = os.getenv("MLFLOW_TRACKING_URI")
-if not mlflow_tracking_uri:
-    raise ValueError("MLFLOW_TRACKING_URI not set in .env file")
-mlflow.set_tracking_uri(mlflow_tracking_uri)
+# Initialize DagsHub MLflow tracking (with automatic fallback to local)
+setup_dagshub_mlflow()
 
 logger = get_logger()
 

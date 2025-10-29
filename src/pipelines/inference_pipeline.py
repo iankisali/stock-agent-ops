@@ -8,7 +8,7 @@ from src.exception import PipelineError
 from src.data.ingestion import fetch_ohlcv
 from src.model.saving import load_model
 from src.inference import predict_one_step_and_week
-from src.utils import save_json
+from src.utils import save_json, setup_dagshub_mlflow
 from src.pipelines.training_pipeline import train_child
 from src.logger import get_logger
 import mlflow
@@ -17,11 +17,8 @@ from mlflow.tracking import MlflowClient
 # Load environment variables from .env file
 load_dotenv()
 
-# Set MLflow tracking URI from .env
-mlflow_tracking_uri = os.getenv("MLFLOW_TRACKING_URI")
-if not mlflow_tracking_uri:
-    raise ValueError("MLFLOW_TRACKING_URI not set in .env file")
-mlflow.set_tracking_uri(mlflow_tracking_uri)
+# Initialize DagsHub MLflow tracking (with automatic fallback to local)
+setup_dagshub_mlflow()
 
 logger = get_logger()
 
