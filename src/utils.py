@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 logger = get_logger()
 
 def setup_dagshub_mlflow():
-    """Initialize DagsHub for remote MLflow tracking with automatic fallback to local tracking."""
+    """Initialize DagsHub for remote MLflow tracking with authentication."""
     load_dotenv()
     
     dagshub_user = os.getenv("DAGSHUB_USER_NAME")
@@ -23,36 +23,47 @@ def setup_dagshub_mlflow():
     dagshub_token = os.getenv("DAGSHUB_TOKEN")
     mlflow_tracking_uri = os.getenv("MLFLOW_TRACKING_URI")
     
-    # Check if DagsHub credentials are provided and not placeholder values
-    if dagshub_user and dagshub_repo and dagshub_token and \
-       dagshub_user != "your_dagshub_username" and dagshub_token != "your_dagshub_token":
+    # Check if DagsHub credentials are provided
+    if dagshub_user and dagshub_repo:
         try:
             import dagshub
+            # Initialize DagsHub
             dagshub.init(repo_owner=dagshub_user, repo_name=dagshub_repo, mlflow=True)
             
-            # Set DagsHub MLflow tracking URI
-            dagshub_mlflow_uri = f"https://dagshub.com/{dagshub_user}/{dagshub_repo}.mlflow"
-            mlflow.set_tracking_uri(dagshub_mlflow_uri)
+            # Set MLflow tracking URI from .env
+            if mlflow_tracking_uri:
+                mlflow.set_tracking_uri(mlflow_tracking_uri)
+                logger.info(f"✓ DagsHub MLflow tracking initialized: {mlflow_tracking_uri}")
+            else:
+                # Fallback to constructed URI
+                dagshub_mlflow_uri = f"https://dagshub.com/{dagshub_user}/{dagshub_repo}.mlflow"
+                mlflow.set_tracking_uri(dagshub_mlflow_uri)
+                logger.info(f"✓ DagsHub MLflow tracking initialized: {dagshub_mlflow_uri}")
             
-            # Set DagsHub credentials for authentication
-            os.environ['MLFLOW_TRACKING_USERNAME'] = dagshub_user
-            os.environ['MLFLOW_TRACKING_PASSWORD'] = dagshub_token
+            # Ensure Model Registry URI points to the same backend
+            try:
+                registry_uri = mlflow.get_tracking_uri()
+                mlflow.set_registry_uri(registry_uri)
+                logger.info(f"✓ MLflow Model Registry initialized: {registry_uri}")
+            except Exception as e:
+                logger.warning(f"Failed setting MLflow registry URI: {e}")
             
-            logger.info(f"✓ DagsHub MLflow tracking initialized: {dagshub_mlflow_uri}")
+            # Set authentication credentials for MLflow
+            if dagshub_token:
+                os.environ['MLFLOW_TRACKING_USERNAME'] = dagshub_user
+                os.environ['MLFLOW_TRACKING_PASSWORD'] = dagshub_token
+                logger.info("✓ DagsHub authentication configured")
+            else:
+                logger.warning("DAGSHUB_TOKEN not set - you may have read-only access")
+            
             return True
         except ImportError:
             logger.warning("dagshub package not installed. Install with: pip install dagshub")
-            logger.info("Falling back to local MLflow tracking")
+            logger.info("Please install: pip install dagshub")
         except Exception as e:
             logger.warning(f"Failed to initialize DagsHub: {e}")
-            logger.info("Falling back to local MLflow tracking")
-    
-    # Fallback to local MLflow tracking
-    if mlflow_tracking_uri:
-        mlflow.set_tracking_uri(mlflow_tracking_uri)
-        logger.info(f"✓ Using local MLflow tracking: {mlflow_tracking_uri}")
     else:
-        logger.warning("MLFLOW_TRACKING_URI not set in .env file. Using default MLflow tracking.")
+        logger.warning("DAGSHUB_USER_NAME or DAGSHUB_REPO_NAME not set in .env file")
     
     return False
 
@@ -60,8 +71,8 @@ def initialize_dirs():
     """Initialize output directories."""
     config = Config()
     os.makedirs(config.parent_dir, exist_ok=True)
-    for ticker in config.child_tickers:
-        os.makedirs(os.path.join(config.workdir, ticker), exist_ok=True)
+    # for ticker in config.child_tickers:
+    #     os.makedirs(os.path.join(config.workdir, ticker), exist_ok=True)
 
 def save_json(data: Dict, path: str) -> str:
     """Save dictionary to JSON file."""

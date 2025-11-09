@@ -1,166 +1,210 @@
-import torch
-from typing import Dict
-import mlflow
-import mlflow.pytorch
 import os
-from dotenv import load_dotenv
-import pickle
+import torch
+import mlflow
+import onnxruntime as ort
+import joblib
 from sklearn.preprocessing import StandardScaler
 from torch.utils.data import DataLoader
+from typing import Dict
+
 from src.config import Config
-from src.exception import PipelineError
 from src.data.ingestion import fetch_ohlcv
 from src.data.preparation import StockDataset
 from src.model.definition import LSTMModel
 from src.model.training import fit_model
-from src.model.saving import save_model, load_model
-from src.model.evaluation import evaluate_model
-from src.inference import predict_one_step_and_week
-from src.utils import save_json, setup_dagshub_mlflow
+from src.model.evaluation import evaluate_model_temp
+from src.utils import setup_dagshub_mlflow
 from src.logger import get_logger
+from src.exception import PipelineError
+from mlflow.tracking import MlflowClient
 
-# Load environment variables from .env file
-load_dotenv()
-
-# Initialize DagsHub MLflow tracking (with automatic fallback to local)
-setup_dagshub_mlflow()
 
 logger = get_logger()
+client = MlflowClient()
 
-def train_parent(ticker: str = Config().parent_ticker, start: str = Config().start_date, 
-                 epochs: int = Config().parent_epochs, out_dir: str = Config().parent_dir) -> Dict:
-    """Train parent model (Full Lifecycle: Ingestion, Prep, Train, Eval, Registry)."""
+
+# =============================================================
+# ✅ HELPER FUNCTIONS
+# =============================================================
+
+def _safe_promote_to_production(model_name: str, version: int):
+    """Promote model version to Production (safe for DagsHub)."""
+    try:
+        client.transition_model_version_stage(
+            name=model_name,
+            version=version,
+            stage="Production",
+            archive_existing_versions=True
+        )
+        logger.info(f"✅ Promoted {model_name} v{version} → Production")
+    except Exception as e:
+        logger.warning(f"⚠️ Registry not supported: {e}")
+
+
+def _register_model_in_registry(onnx_path: str, model_name: str):
+    """Try to register ONNX model to MLflow registry."""
+    try:
+        model_info = mlflow.onnx.log_model(
+            onnx_model=onnx_path,
+            artifact_path="onnx_model",
+            registered_model_name=model_name
+        )
+        version = model_info.version
+        _safe_promote_to_production(model_name, version)
+        return version
+    except Exception as e:
+        logger.warning(f"⚠️ Could not register model: {e}")
+        return None
+
+
+def _get_output_paths(base_dir: str, ticker: str, model_type: str):
+    os.makedirs(base_dir, exist_ok=True)
+    prefix = f"{ticker}_{model_type}"
+    return (
+        os.path.join(base_dir, f"{prefix}_model.pt"),
+        os.path.join(base_dir, f"{prefix}_model.onnx"),
+        os.path.join(base_dir, f"{prefix}_scaler.pkl"),
+    )
+
+
+def _export_to_onnx(model, example_input, onnx_path):
+    """Export trained model to ONNX format."""
+    os.makedirs(os.path.dirname(onnx_path), exist_ok=True)
+    try:
+        torch.onnx.export(
+            model,
+            example_input,
+            onnx_path,
+            input_names=["input"],
+            output_names=["output"],
+            dynamic_axes={"input": {0: "batch"}, "output": {0: "batch"}},
+            opset_version=17
+        )
+        logger.info(f"✅ Exported model to ONNX: {onnx_path}")
+    except Exception as e:
+        logger.error(f"❌ ONNX export failed: {e}")
+        raise PipelineError(f"ONNX export failed: {e}")
+
+
+# =============================================================
+# 🧠 PARENT MODEL TRAINING
+# =============================================================
+
+def train_parent() -> Dict:
+    """Train fixed parent model (^GSPC)."""
+    cfg = Config()
+    ticker = cfg.parent_ticker
+    start = cfg.start_date
+    epochs = cfg.parent_epochs
+    out_dir = cfg.parent_dir
+
     with mlflow.start_run(run_name=f"Parent_Training_{ticker}") as run:
-        config = Config()
-        mlflow.log_params({
-            "ticker": ticker,
-            "start": start,
-            "epochs": epochs,
-            "context_len": config.context_len,
-            "pred_len": config.pred_len,
-            "input_size": config.input_size,
-            "batch_size": config.batch_size,
-            "device": config.device
-        })
-        
         try:
             df = fetch_ohlcv(ticker, start)
-            scaler = StandardScaler().fit(df[config.features])
+            scaler = StandardScaler().fit(df[cfg.features])
             dataset = StockDataset(df, scaler)
+
             train_size = int(0.8 * len(dataset))
-            train_dataset, val_dataset = torch.utils.data.random_split(dataset, [train_size, len(dataset) - train_size])
-            train_loader = DataLoader(train_dataset, batch_size=config.batch_size, shuffle=True)
-            val_loader = DataLoader(val_dataset, batch_size=config.batch_size)
+            train_ds, val_ds = torch.utils.data.random_split(
+                dataset, [train_size, len(dataset) - train_size]
+            )
+            train_loader = DataLoader(train_ds, batch_size=cfg.batch_size, shuffle=True)
+            val_loader = DataLoader(val_ds, batch_size=cfg.batch_size)
 
-            model = LSTMModel()
+            model = LSTMModel().to(cfg.device)
             model = fit_model(model, train_loader, val_loader, epochs=epochs, lr=1e-3)
-            
-            # Save model to filesystem (for backward compatibility)
-            save_model(model, scaler, out_dir, model_type="parent", ticker=ticker)
-            
-            # Log scaler as MLflow artifact
-            scaler_path = os.path.join(out_dir, f"{ticker}_parent_scaler.pkl")
-            with open(scaler_path, "wb") as f:
-                pickle.dump(scaler, f)
-            mlflow.log_artifact(scaler_path, f"scalers/{ticker}")
-            
-            # Log model to MLflow
-            mlflow.pytorch.log_model(model, f"parent_model_{ticker}")
-            
-            # Register model in MLflow model registry
-            model_uri = f"runs:/{run.info.run_id}/parent_model_{ticker}"
-            registered_model = mlflow.register_model(model_uri, f"ParentModel_{ticker}")
-            
-            session = load_model(out_dir, "parent")[0]
-            metrics = evaluate_model(session, df, scaler, out_dir, ticker.replace("^", ""))
-            payload = predict_one_step_and_week(session, df, scaler, ticker)
-            json_filename = f"{ticker}_parent_forecast.json"
-            json_path = save_json(payload, os.path.join(out_dir, json_filename))
-            mlflow.log_artifact(json_path, f"forecasts/{ticker}")
-            # plot_outputs(df, payload, out_dir, ticker)
-            logger.info(f"Parent model trained and registered successfully for {ticker}")
-            return {
-                "checkpoint": out_dir,
-                "json": json_path,
-                "model_name": f"ParentModel_{ticker}",
-                "model_version": registered_model.version,
-                "metrics": metrics
-            }
-        except Exception as e:
-            mlflow.log_param("error", str(e))
-            logger.error(f"Parent model training failed for {ticker}: {e}")
-            raise PipelineError(f"Parent model training failed for {ticker}: {e}")
 
-def train_child(ticker: str, start: str = Config().start_date, epochs: int = Config().child_epochs, 
-                parent_dir: str = Config().parent_dir, workdir: str = Config().workdir) -> Dict:
-    """Train child model using parent model weights (Full Lifecycle: Ingestion, Prep, Train, Eval, Registry, Infer, Viz)."""
+            torch_path, onnx_path, scaler_path = _get_output_paths(out_dir, ticker, "parent")
+            torch.save(model.state_dict(), torch_path)
+            joblib.dump(scaler, scaler_path)
+
+            # 🧠 Export to ONNX
+            example_input = torch.randn(1, cfg.context_len, cfg.input_size).to(cfg.device)
+            _export_to_onnx(model, example_input, onnx_path)
+
+            # ✅ Evaluate
+            session = ort.InferenceSession(onnx_path)
+            metrics = evaluate_model_temp(session, df, scaler, out_dir, ticker)
+
+            # Log to MLflow
+            for k, v in metrics.items():
+                mlflow.log_metric(k, v)
+            mlflow.log_artifact(torch_path, "torch_model")
+            mlflow.log_artifact(onnx_path, "onnx_model")
+            mlflow.log_artifact(scaler_path, "scaler")
+
+            _register_model_in_registry(onnx_path, f"ParentModel_{ticker}")
+
+            logger.info(f"✅ Parent {ticker} trained successfully")
+            return {"ticker": ticker, "run_id": run.info.run_id, "metrics": metrics}
+        except Exception as e:
+            logger.error(f"Parent training failed: {e}")
+            raise PipelineError(f"Parent training failed: {e}")
+
+
+# =============================================================
+# 🧬 CHILD MODEL TRAINING (TRANSFER LEARNING)
+# =============================================================
+
+def train_child(ticker: str) -> Dict:
+    """Train child model using parent weights (transfer learning)."""
+    cfg = Config()
+    start = cfg.start_date
+    epochs = cfg.child_epochs
+    workdir = cfg.workdir
+    parent_dir = cfg.parent_dir
+
     with mlflow.start_run(run_name=f"Child_Training_{ticker}") as run:
-        config = Config()
-        mlflow.log_params({
-            "ticker": ticker,
-            "start": start,
-            "epochs": epochs,
-            "context_len": config.context_len,
-            "pred_len": config.pred_len,
-            "input_size": config.input_size,
-            "batch_size": config.batch_size,
-            "device": config.device,
-            "parent_dir": parent_dir
-        })
-        
         try:
             df = fetch_ohlcv(ticker, start)
-            parent_model = LSTMModel()
-            parent_model_path = os.path.join(parent_dir, "model.pt")
-            if not os.path.exists(parent_model_path):
-                raise FileNotFoundError(f"Parent model not found at {parent_model_path}")
-            parent_model.load_state_dict(torch.load(parent_model_path, map_location=config.device))
+            scaler = StandardScaler().fit(df[cfg.features])
+            dataset = StockDataset(df, scaler)
 
+            train_size = int(0.8 * len(dataset))
+            train_ds, val_ds = torch.utils.data.random_split(
+                dataset, [train_size, len(dataset) - train_size]
+            )
+            train_loader = DataLoader(train_ds, batch_size=cfg.batch_size, shuffle=True)
+            val_loader = DataLoader(val_ds, batch_size=cfg.batch_size)
+
+            parent_model_path = os.path.join(parent_dir, f"{cfg.parent_ticker}_parent_model.pt")
+            if not os.path.exists(parent_model_path):
+                raise FileNotFoundError(f"Parent model missing at {parent_model_path}")
+
+            parent_model = LSTMModel().to(cfg.device)
+            parent_model.load_state_dict(torch.load(parent_model_path, map_location=cfg.device))
+            logger.info(f"🔁 Loaded parent weights from {parent_model_path}")
+
+            # Freeze LSTM layers for transfer learning
             for name, param in parent_model.named_parameters():
                 if "lstm" in name:
                     param.requires_grad = False
 
-            scaler = StandardScaler().fit(df[config.features])
-            if (df[config.features].std() == 0).any():
-                raise PipelineError(f"Zero variance in features for {ticker}")
-            dataset = StockDataset(df, scaler)
-            train_size = int(0.8 * len(dataset))
-            train_dataset, val_dataset = torch.utils.data.random_split(dataset, [train_size, len(dataset) - train_size])
-            train_loader = DataLoader(train_dataset, batch_size=config.batch_size, shuffle=True)
-            val_loader = DataLoader(val_dataset, batch_size=config.batch_size)
+            model = fit_model(parent_model, train_loader, val_loader, epochs=epochs, lr=3e-4)
 
-            child_model = fit_model(parent_model, train_loader, val_loader, epochs=epochs, lr=3e-4)
             child_dir = os.path.join(workdir, ticker)
-            save_model(child_model, scaler, child_dir, model_type="child", ticker=ticker)
-            
-            # Log scaler as MLflow artifact
-            scaler_path = os.path.join(child_dir, f"{ticker}_child_scaler.pkl")
-            with open(scaler_path, "wb") as f:
-                pickle.dump(scaler, f)
-            mlflow.log_artifact(scaler_path, f"scalers/{ticker}")
-            
-            # Log model to MLflow
-            mlflow.pytorch.log_model(child_model, f"child_model_{ticker}")
-            
-            # Register model in MLflow model registry
-            model_uri = f"runs:/{run.info.run_id}/child_model_{ticker}"
-            registered_model = mlflow.register_model(model_uri, f"ChildModel_{ticker}")
-            
-            session = load_model(child_dir, "child", ticker)[0]
-            payload = predict_one_step_and_week(session, df, scaler, ticker)
-            json_filename = f"{ticker}_child_forecast.json"
-            json_path = save_json(payload, os.path.join(child_dir, json_filename))
-            mlflow.log_artifact(json_path, f"forecasts/{ticker}")
-            # plot_outputs(df, payload, child_dir, ticker)
-            evaluate_model(session, df, scaler, child_dir, ticker)
-            logger.info(f"Child model trained and registered successfully for {ticker}")
-            return {
-                "checkpoint": child_dir,
-                "json": json_path,
-                "model_name": f"ChildModel_{ticker}",
-                "model_version": registered_model.version
-            }
+            torch_path, onnx_path, scaler_path = _get_output_paths(child_dir, ticker, "child")
+            torch.save(model.state_dict(), torch_path)
+            joblib.dump(scaler, scaler_path)
+
+            # 🧠 Export to ONNX
+            example_input = torch.randn(1, cfg.context_len, cfg.input_size).to(cfg.device)
+            _export_to_onnx(model, example_input, onnx_path)
+
+            # ✅ Evaluate
+            session = ort.InferenceSession(onnx_path)
+            metrics = evaluate_model_temp(session, df, scaler, child_dir, ticker)
+
+            for k, v in metrics.items():
+                mlflow.log_metric(k, v)
+            mlflow.log_artifact(torch_path, "torch_model")
+            mlflow.log_artifact(onnx_path, "onnx_model")
+            mlflow.log_artifact(scaler_path, "scaler")
+
+            _register_model_in_registry(onnx_path, f"ChildModel_{ticker}")
+
+            logger.info(f"✅ Child {ticker} trained successfully")
+            return {"ticker": ticker, "run_id": run.info.run_id, "metrics": metrics}
         except Exception as e:
-            mlflow.log_param("error", str(e))
-            logger.error(f"Child model training failed for {ticker}: {e}")
-            raise PipelineError(f"Child model training failed for {ticker}: {e}")
+            logger.error(f"Child training failed: {e}")
+            raise PipelineError(f"Child training failed: {e}")
