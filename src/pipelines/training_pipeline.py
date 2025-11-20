@@ -192,7 +192,9 @@ def train_child(ticker: str) -> Dict:
             _export_to_onnx(model, example_input, onnx_path)
 
             # ✅ Evaluate
+            logger.info(f"Starting ONNX inference session for {ticker} at {onnx_path}")
             session = ort.InferenceSession(onnx_path)
+            logger.info(f"ONNX inference session created for {ticker}")
             metrics = evaluate_model_temp(session, df, scaler, child_dir, ticker)
 
             for k, v in metrics.items():

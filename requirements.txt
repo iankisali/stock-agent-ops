@@ -14,3 +14,4 @@ aiofiles
 redis
 prometheus-fastapi-instrumentator
 dagshub
+psutil

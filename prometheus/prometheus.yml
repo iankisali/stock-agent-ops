@@ -1,8 +1,6 @@
-global:
-  scrape_interval: 15s
-
 scrape_configs:
   - job_name: "fastapi"
-    metrics_path: /metrics
+    metrics_path: "/metrics"
     static_configs:
-      - targets: ["192.168.0.108:8000"]  # FastAPI service in Docker
+      - targets: ["fastapi:8000"]
+    scrape_interval: 5s

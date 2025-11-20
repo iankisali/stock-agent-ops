@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
+import mlflow
 from src.config import Config
 from src.logger import get_logger
 
@@ -39,6 +40,15 @@ def fit_model(model: nn.Module, train_loader: DataLoader, val_loader: DataLoader
                 val_loss += criterion(pred, Y).item()
         avg_val_loss = val_loss / len(val_loader)
         logger.info(f"Epoch {ep}/{epochs} - Val Loss: {avg_val_loss:.5f}")
+
+        # Log metrics to MLflow
+        try:
+            current_lr = opt.param_groups[0]['lr']
+            mlflow.log_metric("train_loss", avg_train_loss, step=ep)
+            mlflow.log_metric("val_loss", avg_val_loss, step=ep)
+            mlflow.log_metric("learning_rate", current_lr, step=ep)
+        except Exception as e:
+            logger.warning(f"Failed to log metrics to MLflow: {e}")
 
         scheduler.step(avg_val_loss)
         if avg_val_loss < best_val_loss:

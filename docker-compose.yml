@@ -1,10 +1,15 @@
 version: "3.9"
 
+networks:
+  app_network:
+    driver: bridge
+
 services:
   fastapi:
     build:
       context: .
       dockerfile: Dockerfile
+    platform: linux/arm64
     container_name: fastapi
     ports:
       - "8000:8000"
@@ -12,9 +17,11 @@ services:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
     env_file:
-      - .env  
+      - .env
     depends_on:
       - redis
+    networks:
+      - app_network
     command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 
   redis:
@@ -23,6 +30,8 @@ services:
     ports:
       - "6379:6379"
     restart: unless-stopped
+    networks:
+      - app_network
 
   prometheus:
     image: prom/prometheus:latest
@@ -30,20 +39,23 @@ services:
     ports:
       - "9090:9090"
     volumes:
-      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
     depends_on:
       - fastapi
+    networks:
+      - app_network
 
   grafana:
     image: grafana/grafana:latest
     container_name: grafana
     ports:
-      - "3000:3000"  # Grafana UI accessible here
+      - "3000:3000"
     environment:
       - GF_SECURITY_ADMIN_USER=admin
-      - GF_SECURITY_ADMIN_PASSWORD=admin  # Default login
+      - GF_SECURITY_ADMIN_PASSWORD=admin
     depends_on:
-      - prometheus  # Make sure Prometheus is up first
+      - prometheus
     volumes:
-      - ./grafana:/var/lib/grafana  # For persisting data
-
+      - ./grafana:/var/lib/grafana
+    networks:
+      - app_network
