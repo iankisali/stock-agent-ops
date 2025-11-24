@@ -12,8 +12,38 @@ from src.logger import get_logger
 # import onnxruntime as ort
 import pandas as pd
 from sklearn.preprocessing import StandardScaler
+import matplotlib.pyplot as plt
 
 logger = get_logger()
+
+def plot_predictions(Y: np.ndarray, preds: np.ndarray, ticker: str, save_path: str):
+    """Plot Actual vs Predicted for the first 5 dimensions (OHLCV)."""
+    plt.figure(figsize=(12, 8))
+    features = ["Open", "High", "Low", "Close", "Volume"]
+    for i, feature in enumerate(features):
+        plt.subplot(3, 2, i + 1)
+        plt.plot(Y[:, i], label="Actual", alpha=0.7)
+        plt.plot(preds[:, i], label="Predicted", alpha=0.7)
+        plt.title(f"{ticker} - {feature}")
+        plt.legend()
+    plt.tight_layout()
+    plt.savefig(save_path)
+    plt.close()
+
+def plot_residuals(Y: np.ndarray, preds: np.ndarray, ticker: str, save_path: str):
+    """Plot Residuals (Actual - Predicted) for the first 5 dimensions (OHLCV)."""
+    residuals = Y - preds
+    plt.figure(figsize=(12, 8))
+    features = ["Open", "High", "Low", "Close", "Volume"]
+    for i, feature in enumerate(features):
+        plt.subplot(3, 2, i + 1)
+        plt.plot(residuals[:, i], label="Residuals", alpha=0.7)
+        plt.axhline(0, color='r', linestyle='--')
+        plt.title(f"{ticker} - {feature} Residuals")
+        plt.legend()
+    plt.tight_layout()
+    plt.savefig(save_path)
+    plt.close()
 
 def evaluate_model_temp(model, df: pd.DataFrame, scaler: StandardScaler, temp_dir: str, ticker: str) -> Dict:
     """Evaluate model performance and save metrics directly to MLflow without local persistence."""
@@ -65,6 +95,17 @@ def evaluate_model_temp(model, df: pd.DataFrame, scaler: StandardScaler, temp_di
         # Log metrics to MLflow
         mlflow.log_metrics(metrics)
         mlflow.log_artifact(metrics_path, f"metrics/{ticker}")
+
+        # Generate and log plots
+        plot_filename = f"{ticker}_predictions.png"
+        plot_path = os.path.join(temp_dir, plot_filename)
+        plot_predictions(Y_ohlcv, preds_ohlcv, ticker, plot_path)
+        mlflow.log_artifact(plot_path, f"plots/{ticker}")
+
+        resid_filename = f"{ticker}_residuals.png"
+        resid_path = os.path.join(temp_dir, resid_filename)
+        plot_residuals(Y_ohlcv, preds_ohlcv, ticker, resid_path)
+        mlflow.log_artifact(resid_path, f"plots/{ticker}")
 
         return metrics
     except Exception as e:
@@ -119,6 +160,17 @@ def evaluate_model(model, df: pd.DataFrame, scaler: StandardScaler, out_dir: str
         # Log metrics to MLflow
         mlflow.log_metrics(metrics)
         mlflow.log_artifact(metrics_path)
+
+        # Generate and log plots
+        plot_filename = f"{ticker}_predictions.png"
+        plot_path = os.path.join(out_dir, plot_filename)
+        plot_predictions(Y_ohlcv, preds_ohlcv, ticker, plot_path)
+        mlflow.log_artifact(plot_path)
+
+        resid_filename = f"{ticker}_residuals.png"
+        resid_path = os.path.join(out_dir, resid_filename)
+        plot_residuals(Y_ohlcv, preds_ohlcv, ticker, resid_path)
+        mlflow.log_artifact(resid_path)
 
         return metrics
     except Exception as e:

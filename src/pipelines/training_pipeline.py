@@ -70,6 +70,15 @@ def train_parent() -> Dict:
     out_dir = cfg.parent_dir
 
     with mlflow.start_run(run_name=f"Parent_Training_{ticker}") as run:
+        mlflow.log_params({
+            "context_len": cfg.context_len,
+            "pred_len": cfg.pred_len,
+            "features": cfg.features,
+            "batch_size": cfg.batch_size,
+            "start_date": cfg.start_date,
+            "epochs": epochs,
+            "input_size": cfg.input_size
+        })
         try:
             df = fetch_ohlcv(ticker, start)
             scaler = StandardScaler().fit(df[cfg.features])
@@ -121,6 +130,16 @@ def train_child(ticker: str) -> Dict:
     parent_dir = cfg.parent_dir
 
     with mlflow.start_run(run_name=f"Child_Training_{ticker}") as run:
+        mlflow.log_params({
+            "context_len": cfg.context_len,
+            "pred_len": cfg.pred_len,
+            "features": cfg.features,
+            "batch_size": cfg.batch_size,
+            "start_date": cfg.start_date,
+            "epochs": epochs,
+            "input_size": cfg.input_size,
+            "parent_ticker": cfg.parent_ticker
+        })
         try:
             df = fetch_ohlcv(ticker, start)
             scaler = StandardScaler().fit(df[cfg.features])
