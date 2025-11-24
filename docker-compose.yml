@@ -9,7 +9,6 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    platform: linux/arm64
     container_name: fastapi
     ports:
       - "8000:8000"
@@ -22,6 +21,10 @@ services:
       - redis
     networks:
       - app_network
+    volumes:
+      - ./outputs:/app/outputs
+      - ./mlruns:/app/mlruns
+      - ./mlartifacts:/app/mlartifacts
     command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 
   redis:
@@ -57,5 +60,6 @@ services:
       - prometheus
     volumes:
       - ./grafana:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning
     networks:
       - app_network

@@ -4,6 +4,7 @@ import time
 import uvicorn
 import redis
 import psutil
+from concurrent.futures import ThreadPoolExecutor
 from fastapi import FastAPI, Body
 from fastapi.responses import Response
 
@@ -31,13 +32,14 @@ from src.exception import PipelineError
 # INITIAL SETUP
 # ---------------------------------------------------------
 setup_dagshub_mlflow()
-initialize_dirs()
 logger = get_logger()
 
 app = FastAPI(title="MLOps Stock Pipeline", version="3.0")
 
 redis_client = None
-task_status = {}  # track background tasks: { "parent": {...}, ticker: {...} }
+task_status = {}  # {"parent": {...}, "ticker": {...}}
+
+executor = ThreadPoolExecutor(max_workers=4)   # ⭐ Improved concurrency
 
 
 # ---------------------------------------------------------
@@ -48,23 +50,18 @@ registry.register(GC_COLLECTOR)
 registry.register(PLATFORM_COLLECTOR)
 registry.register(PROCESS_COLLECTOR)
 
-# System metrics
 SYSTEM_CPU = Gauge("system_cpu_percent", "CPU percent", registry=registry)
-SYSTEM_RAM = Gauge("system_ram_used_mb", "RAM in MB", registry=registry)
-SYSTEM_DISK = Gauge("system_disk_used_mb", "Disk in MB", registry=registry)
+SYSTEM_RAM = Gauge("system_ram_used_mb", "RAM MB", registry=registry)
+SYSTEM_DISK = Gauge("system_disk_used_mb", "Disk MB", registry=registry)
 
-# Redis
 REDIS_STATUS = Gauge("redis_up", "Redis up=1/down=0", registry=registry)
 
-# Training metrics
-TRAINING_STATUS = Gauge("training_status", "Training status (0=idle,1=running,2=done)", ["task"], registry=registry)
+TRAINING_STATUS = Gauge("training_status", "Training status", ["task"], registry=registry)
 TRAINING_DURATION = Histogram("training_duration_seconds", "Training duration", ["task"], registry=registry)
 
-# Prediction metrics
-PREDICTION_COUNTER = Counter("prediction_total", "Total predictions", ["type"], registry=registry)
+PREDICTION_COUNTER = Counter("prediction_total", "Prediction count", ["type"], registry=registry)
 PREDICTION_LATENCY = Histogram("prediction_latency_seconds", "Prediction latency", ["type"], registry=registry)
 
-# Cache metrics
 CACHE_HIT = Counter("redis_cache_hit_total", "Cache hit", ["key"], registry=registry)
 CACHE_MISS = Counter("redis_cache_miss_total", "Cache miss", ["key"], registry=registry)
 
@@ -98,22 +95,20 @@ def get_or_set_cache(key, compute_fn, expire=86400):
         return result, False
 
     except Exception as e:
-        logger.error(f"Redis cache error: {e}")
+        logger.error(f"Redis error: {e}")
         return compute_fn(), False
 
 
 # ---------------------------------------------------------
-# STARTUP EVENT
+# STARTUP
 # ---------------------------------------------------------
 @app.on_event("startup")
 def startup():
     global redis_client
     try:
-        import platform
-        logger.info(f"Platform: {platform.platform()}")
-        logger.info(f"Machine: {platform.machine()}")
-        logger.info(f"Processor: {platform.processor()}")
-        
+        setup_dagshub_mlflow()
+        initialize_dirs()
+
         redis_client = redis.Redis(host="redis", port=6379, db=0)
         redis_client.ping()
         REDIS_STATUS.set(1)
@@ -124,28 +119,55 @@ def startup():
 
 
 # ---------------------------------------------------------
-# TRAINING TASK HANDLER
+# TRAINING TASK EXECUTOR WITH PROGRESS
 # ---------------------------------------------------------
 async def run_training(task_name, fn, *args):
-    """Run training asynchronously and record metrics."""
-    task_status[task_name] = {"status": "running", "start": time.time()}
+    """
+    Run training asynchronously using ThreadPoolExecutor,
+    track status, progress, errors and duration.
+    """
+    task_status[task_name] = {
+        "status": "running",
+        "progress": 0,
+        "start": time.time()
+    }
     TRAINING_STATUS.labels(task_name).set(1)
 
+    loop = asyncio.get_event_loop()
     start_time = time.time()
+
     try:
-        result = await asyncio.to_thread(fn, *args)
+        future = loop.run_in_executor(executor, fn, *args)
+
+        # Simple progress simulation (real progress can be integrated later)
+        while not future.done():
+            await asyncio.sleep(2)
+            if task_status[task_name]["progress"] < 90:
+                task_status[task_name]["progress"] += 10
+
+        result = await future
         duration = time.time() - start_time
 
-        task_status[task_name] = {"status": "completed", "duration": duration}
+        task_status[task_name] = {
+            "status": "completed",
+            "duration": duration,
+            "result": result,
+            "progress": 100
+        }
+
         TRAINING_STATUS.labels(task_name).set(2)
         TRAINING_DURATION.labels(task_name).observe(duration)
 
         return result
 
     except Exception as e:
-        task_status[task_name] = {"status": "failed", "error": str(e)}
+        task_status[task_name] = {
+            "status": "failed",
+            "error": str(e),
+            "progress": 0
+        }
         TRAINING_STATUS.labels(task_name).set(0)
-        logger.error(f"{task_name} failed: {e}")
+        logger.error(f"Training failed for {task_name}: {e}")
 
 
 # ---------------------------------------------------------
@@ -158,11 +180,15 @@ async def health():
 
 
 # ---------------------------------------------------------
-# TRAINING ENDPOINTS (ASYNC)
+# TRAINING ENDPOINTS
 # ---------------------------------------------------------
 @app.post("/train-parent")
 async def train_parent_api():
     task_name = "parent"
+
+    if task_name in task_status and task_status[task_name]["status"] == "running":
+        return {"status": "already_running"}
+
     asyncio.create_task(run_training(task_name, train_parent))
     return {"status": "started", "task": task_name}
 
@@ -174,20 +200,29 @@ async def train_child_api(data: dict = Body(...)):
         return {"error": "ticker is required"}
 
     task_name = ticker.lower()
+
+    if task_name in task_status and task_status[task_name]["status"] == "running":
+        return {"status": "already_running"}
+
     asyncio.create_task(run_training(task_name, train_child, ticker))
     return {"status": "started", "task": task_name}
 
 
 # ---------------------------------------------------------
-# CHECK TASK STATUS
+# STATUS ENDPOINTS
 # ---------------------------------------------------------
 @app.get("/status/{task_id}")
 async def status(task_id: str):
     return task_status.get(task_id, {"status": "not_found"})
 
 
+@app.get("/status-training")
+async def status_training():
+    return task_status
+
+
 # ---------------------------------------------------------
-# PREDICTION (ASYNC)
+# PREDICTION ENDPOINTS
 # ---------------------------------------------------------
 @app.post("/predict-parent")
 async def predict_parent_api():
@@ -211,7 +246,7 @@ async def predict_child_api(data: dict = Body(...)):
             result, cached = get_or_set_cache(cache_key, lambda: predict_child(ticker))
 
         except PipelineError:
-            logger.warning(f"Model missing for {ticker}. Training now...")
+            logger.warning(f"Model missing for {ticker}, training now...")
             await run_training(ticker, train_child, ticker)
             result, cached = get_or_set_cache(cache_key, lambda: predict_child(ticker))
 

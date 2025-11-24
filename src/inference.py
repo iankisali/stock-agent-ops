@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 from typing import Dict
-import onnxruntime as ort
+# import onnxruntime as ort
 from sklearn.preprocessing import StandardScaler
 from src.config import Config
 from src.logger import get_logger
@@ -9,18 +9,25 @@ from src.exception import PipelineError
 
 logger = get_logger()
 
-def predict_one_step_and_week(session: ort.InferenceSession, df: pd.DataFrame, scaler: StandardScaler, ticker: str) -> Dict:
+
+
+def predict_one_step_and_week(model, df: pd.DataFrame, scaler: StandardScaler, ticker: str) -> Dict:
     """
-    Generate predictions for the next trading days based on the ONNX model.
+    Generate predictions for the next trading days using PyTorch model.
     Includes next-day, next-week, and full 5-day forecast.
     """
     try:
         cfg = Config()
         vals = scaler.transform(df[cfg.features]).astype("float32")
+        # Shape: (1, context_len, input_size)
         X = vals[-cfg.context_len:].reshape(1, cfg.context_len, cfg.input_size)
-
+        
         # Run inference
-        preds = session.run(None, {"input": X})[0]  # shape: (pred_len, input_size)
+        import torch
+        with torch.no_grad():
+            X_tensor = torch.tensor(X, dtype=torch.float32).to(cfg.device)
+            preds = model(X_tensor).cpu().numpy()[0]  # shape: (pred_len, input_size)
+
         preds_inv = scaler.inverse_transform(preds.reshape(-1, cfg.input_size))[:, :5]
 
         # Prepare dates

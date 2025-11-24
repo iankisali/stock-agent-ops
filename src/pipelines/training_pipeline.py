@@ -1,7 +1,7 @@
 import os
 import torch
 import mlflow
-import onnxruntime as ort
+# import onnxruntime as ort removed
 import joblib
 from sklearn.preprocessing import StandardScaler
 from torch.utils.data import DataLoader
@@ -20,7 +20,7 @@ from mlflow.tracking import MlflowClient
 
 
 logger = get_logger()
-client = MlflowClient()
+
 
 
 # =============================================================
@@ -30,6 +30,7 @@ client = MlflowClient()
 def _safe_promote_to_production(model_name: str, version: int):
     """Promote model version to Production (safe for DagsHub)."""
     try:
+        client = MlflowClient()
         client.transition_model_version_stage(
             name=model_name,
             version=version,
@@ -41,20 +42,7 @@ def _safe_promote_to_production(model_name: str, version: int):
         logger.warning(f"⚠️ Registry not supported: {e}")
 
 
-def _register_model_in_registry(onnx_path: str, model_name: str):
-    """Try to register ONNX model to MLflow registry."""
-    try:
-        model_info = mlflow.onnx.log_model(
-            onnx_model=onnx_path,
-            artifact_path="onnx_model",
-            registered_model_name=model_name
-        )
-        version = model_info.version
-        _safe_promote_to_production(model_name, version)
-        return version
-    except Exception as e:
-        logger.warning(f"⚠️ Could not register model: {e}")
-        return None
+# _register_model_in_registry removed (ONNX specific)
 
 
 def _get_output_paths(base_dir: str, ticker: str, model_type: str):
@@ -62,28 +50,11 @@ def _get_output_paths(base_dir: str, ticker: str, model_type: str):
     prefix = f"{ticker}_{model_type}"
     return (
         os.path.join(base_dir, f"{prefix}_model.pt"),
-        os.path.join(base_dir, f"{prefix}_model.onnx"),
         os.path.join(base_dir, f"{prefix}_scaler.pkl"),
     )
 
 
-def _export_to_onnx(model, example_input, onnx_path):
-    """Export trained model to ONNX format."""
-    os.makedirs(os.path.dirname(onnx_path), exist_ok=True)
-    try:
-        torch.onnx.export(
-            model,
-            example_input,
-            onnx_path,
-            input_names=["input"],
-            output_names=["output"],
-            dynamic_axes={"input": {0: "batch"}, "output": {0: "batch"}},
-            opset_version=17
-        )
-        logger.info(f"✅ Exported model to ONNX: {onnx_path}")
-    except Exception as e:
-        logger.error(f"❌ ONNX export failed: {e}")
-        raise PipelineError(f"ONNX export failed: {e}")
+# _export_to_torchserve removed
 
 
 # =============================================================
@@ -114,26 +85,21 @@ def train_parent() -> Dict:
             model = LSTMModel().to(cfg.device)
             model = fit_model(model, train_loader, val_loader, epochs=epochs, lr=1e-3)
 
-            torch_path, onnx_path, scaler_path = _get_output_paths(out_dir, ticker, "parent")
+            torch_path, scaler_path = _get_output_paths(out_dir, ticker, "parent")
             torch.save(model.state_dict(), torch_path)
             joblib.dump(scaler, scaler_path)
 
-            # 🧠 Export to ONNX
-            example_input = torch.randn(1, cfg.context_len, cfg.input_size).to(cfg.device)
-            _export_to_onnx(model, example_input, onnx_path)
-
             # ✅ Evaluate
-            session = ort.InferenceSession(onnx_path)
-            metrics = evaluate_model_temp(session, df, scaler, out_dir, ticker)
+            model.eval()
+            metrics = evaluate_model_temp(model, df, scaler, out_dir, ticker)
 
             # Log to MLflow
             for k, v in metrics.items():
                 mlflow.log_metric(k, v)
             mlflow.log_artifact(torch_path, "torch_model")
-            mlflow.log_artifact(onnx_path, "onnx_model")
             mlflow.log_artifact(scaler_path, "scaler")
 
-            _register_model_in_registry(onnx_path, f"ParentModel_{ticker}")
+            # _register_model_in_registry(onnx_path, f"ParentModel_{ticker}") # Skipping registry for now as it was ONNX specific
 
             logger.info(f"✅ Parent {ticker} trained successfully")
             return {"ticker": ticker, "run_id": run.info.run_id, "metrics": metrics}
@@ -183,27 +149,20 @@ def train_child(ticker: str) -> Dict:
             model = fit_model(parent_model, train_loader, val_loader, epochs=epochs, lr=3e-4)
 
             child_dir = os.path.join(workdir, ticker)
-            torch_path, onnx_path, scaler_path = _get_output_paths(child_dir, ticker, "child")
+            torch_path, scaler_path = _get_output_paths(child_dir, ticker, "child")
             torch.save(model.state_dict(), torch_path)
             joblib.dump(scaler, scaler_path)
 
-            # 🧠 Export to ONNX
-            example_input = torch.randn(1, cfg.context_len, cfg.input_size).to(cfg.device)
-            _export_to_onnx(model, example_input, onnx_path)
-
             # ✅ Evaluate
-            logger.info(f"Starting ONNX inference session for {ticker} at {onnx_path}")
-            session = ort.InferenceSession(onnx_path)
-            logger.info(f"ONNX inference session created for {ticker}")
-            metrics = evaluate_model_temp(session, df, scaler, child_dir, ticker)
+            model.eval()
+            metrics = evaluate_model_temp(model, df, scaler, child_dir, ticker)
 
             for k, v in metrics.items():
                 mlflow.log_metric(k, v)
             mlflow.log_artifact(torch_path, "torch_model")
-            mlflow.log_artifact(onnx_path, "onnx_model")
             mlflow.log_artifact(scaler_path, "scaler")
 
-            _register_model_in_registry(onnx_path, f"ChildModel_{ticker}")
+            # _register_model_in_registry(onnx_path, f"ChildModel_{ticker}")
 
             logger.info(f"✅ Child {ticker} trained successfully")
             return {"ticker": ticker, "run_id": run.info.run_id, "metrics": metrics}

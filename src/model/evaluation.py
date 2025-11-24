@@ -9,13 +9,13 @@ from src.data.ingestion import fetch_ohlcv
 # from src.utils import save_json
 # from src.saving import load_model
 from src.logger import get_logger
-import onnxruntime as ort
+# import onnxruntime as ort
 import pandas as pd
 from sklearn.preprocessing import StandardScaler
 
 logger = get_logger()
 
-def evaluate_model_temp(session: ort.InferenceSession, df: pd.DataFrame, scaler: StandardScaler, temp_dir: str, ticker: str) -> Dict:
+def evaluate_model_temp(model, df: pd.DataFrame, scaler: StandardScaler, temp_dir: str, ticker: str) -> Dict:
     """Evaluate model performance and save metrics directly to MLflow without local persistence."""
     try:
         config = Config()
@@ -35,7 +35,15 @@ def evaluate_model_temp(session: ort.InferenceSession, df: pd.DataFrame, scaler:
             return {}
 
         X, Y = np.array(X), np.array(Y)
-        preds = [session.run(None, {'input': x.reshape(1, config.context_len, config.input_size)})[0] for x in X]
+        
+        import torch
+        with torch.no_grad():
+            preds = []
+            for x in X:
+                x_tensor = torch.tensor(x.reshape(1, config.context_len, config.input_size), dtype=torch.float32).to(config.device)
+                pred = model(x_tensor).cpu().numpy()[0]
+                preds.append(pred)
+        
         preds = np.array(preds)
         Y_ohlcv = Y.reshape(-1, config.input_size)[:, :5]
         preds_ohlcv = preds.reshape(-1, config.input_size)[:, :5]
@@ -63,7 +71,7 @@ def evaluate_model_temp(session: ort.InferenceSession, df: pd.DataFrame, scaler:
         logger.error(f"Evaluation failed for {ticker}: {e}")
         return {}
 
-def evaluate_model(session: ort.InferenceSession, df: pd.DataFrame, scaler: StandardScaler, out_dir: str, ticker: str) -> Dict:
+def evaluate_model(model, df: pd.DataFrame, scaler: StandardScaler, out_dir: str, ticker: str) -> Dict:
     """Evaluate model performance (Model Evaluation Stage) - Legacy function for backward compatibility."""
     try:
         os.makedirs(out_dir, exist_ok=True)
@@ -84,7 +92,15 @@ def evaluate_model(session: ort.InferenceSession, df: pd.DataFrame, scaler: Stan
             return {}
 
         X, Y = np.array(X), np.array(Y)
-        preds = [session.run(None, {'input': x.reshape(1, config.context_len, config.input_size)})[0] for x in X]
+        
+        import torch
+        with torch.no_grad():
+            preds = []
+            for x in X:
+                x_tensor = torch.tensor(x.reshape(1, config.context_len, config.input_size), dtype=torch.float32).to(config.device)
+                pred = model(x_tensor).cpu().numpy()[0]
+                preds.append(pred)
+
         preds = np.array(preds)
         Y_ohlcv = Y.reshape(-1, config.input_size)[:, :5]
         preds_ohlcv = preds.reshape(-1, config.input_size)[:, :5]
