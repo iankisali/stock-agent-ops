@@ -10,9 +10,14 @@ curl -X POST http://localhost:8000/train-parent
 curl -X POST http://localhost:8000/train-child -H "Content-Type: application/json" -d '{"ticker": "AAPL"}'
 ```
 
-- Predict parent model
+- Training Status parent model
 ```bash
-curl -X POST http://localhost:8000/predict-parent -H "Content-Type: application/json" -d '{"ticker": "AAPL"}'
+curl -X GET http://localhost:8000/status/parent
+```
+
+- Training Status child model
+```bash 
+curl -X GET http://localhost:8000/status/aapl
 ```
 
 - Predict child model
@@ -20,7 +25,12 @@ curl -X POST http://localhost:8000/predict-parent -H "Content-Type: application/
 curl -X POST http://localhost:8000/predict-child -H "Content-Type: application/json" -d '{"ticker": "AAPL"}'
 ```
 
-- Metric    
+- Metrics
 ```bash
 curl -X GET http://localhost:8000/metrics
+```
+
+- Health Check
+```bash
+curl -X GET http://localhost:8000/health
 ```

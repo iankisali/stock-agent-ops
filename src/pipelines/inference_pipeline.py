@@ -2,6 +2,12 @@ import os
 import pickle
 import joblib
 import torch
+import base64
+import io
+import matplotlib.pyplot as plt
+import mlflow
+import pandas as pd
+from feast import FeatureStore
 from src.model.definition import LSTMModel
 from src.config import Config
 from src.data.ingestion import fetch_ohlcv
@@ -11,6 +17,13 @@ from src.exception import PipelineError
 
 logger = get_logger()
 cfg = Config()
+
+# Initialize Feast Feature Store
+try:
+    store = FeatureStore(repo_path="feature_repo")
+except Exception as e:
+    logger.warning(f"Feast Feature Store not initialized: {e}")
+    store = None
 
 
 # =============================================================
@@ -60,6 +73,57 @@ def _load_local_model(ticker: str, model_type: str):
 
 
 # =============================================================
+# 📊 PLOTTING HELPER
+# =============================================================
+
+def _generate_plot(history_df, forecast_data, ticker):
+    """
+    Generates a plot of historical data and forecast, returns base64 string.
+    Also logs the figure to MLflow.
+    """
+    try:
+        # Prepare data
+        last_30_days = history_df.tail(30)
+        dates = pd.to_datetime(last_30_days["date"])
+        closes = last_30_days["close"]
+        
+        forecast_dates = [pd.to_datetime(d["date"]) for d in forecast_data]
+        forecast_closes = [d["close"] for d in forecast_data]
+
+        # Create plot
+        plt.figure(figsize=(10, 6))
+        plt.plot(dates, closes, label="Historical (Last 30 Days)", color="blue")
+        plt.plot(forecast_dates, forecast_closes, label="Forecast", color="red", linestyle="--")
+        
+        plt.title(f"Price Prediction for {ticker}")
+        plt.xlabel("Date")
+        plt.ylabel("Close Price")
+        plt.legend()
+        plt.grid(True)
+        plt.xticks(rotation=45)
+        plt.tight_layout()
+
+        # Save to buffer
+        buf = io.BytesIO()
+        plt.savefig(buf, format="png")
+        buf.seek(0)
+        plot_base64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+        
+        # Log to MLflow
+        try:
+            mlflow.log_figure(plt.gcf(), f"{ticker}_prediction_plot.png")
+        except Exception as e:
+            logger.warning(f"Failed to log figure to MLflow: {e}")
+
+        plt.close()
+        return plot_base64
+
+    except Exception as e:
+        logger.error(f"Plot generation failed: {e}")
+        return None
+
+
+# =============================================================
 # 🧠 PREDICTION FUNCTIONS
 # =============================================================
 
@@ -82,9 +146,33 @@ def predict_parent():
 def predict_child(ticker: str):
     """Predict using locally saved child model."""
     try:
+        # Fetch features from Feast (Demonstration)
+        if store:
+            try:
+                feature_vector = store.get_online_features(
+                    features=[
+                        "stock_stats:Open",
+                        "stock_stats:High",
+                        "stock_stats:Low",
+                        "stock_stats:Close",
+                        "stock_stats:Volume",
+                        "stock_stats:RSI14",
+                        "stock_stats:MACD",
+                    ],
+                    entity_rows=[{"ticker": ticker}]
+                ).to_dict()
+                logger.info(f"✅ Fetched online features from Feast for {ticker}: {feature_vector}")
+            except Exception as e:
+                logger.warning(f"Failed to fetch from Feast: {e}")
+
         model, scaler = _load_local_model(ticker, "child")
         df = fetch_ohlcv(ticker)
         preds = predict_one_step_and_week(model, df, scaler, ticker)
+
+        # Generate plot
+        plot_b64 = _generate_plot(df, preds["predictions"]["full_forecast"], ticker)
+        if plot_b64:
+            preds["plot_base64"] = plot_b64
 
         logger.info(f"✅ Child prediction completed for {ticker}")
         return preds

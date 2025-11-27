@@ -13,3 +13,4 @@ redis
 prometheus-fastapi-instrumentator
 dagshub
 psutil
+feast

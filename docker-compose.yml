@@ -25,6 +25,7 @@ services:
       - ./outputs:/app/outputs
       - ./mlruns:/app/mlruns
       - ./mlartifacts:/app/mlartifacts
+      - ./feature_repo:/app/feature_repo
     command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 
   redis:
@@ -33,6 +34,21 @@ services:
     ports:
       - "6379:6379"
     restart: unless-stopped
+    networks:
+      - app_network
+
+  feast-server:
+    image: feastdev/feature-server:latest
+    container_name: feast-server
+    ports:
+      - "6566:6566"
+    environment:
+      - FEAST_USAGE=False
+    volumes:
+      - ./feature_repo:/app/feature_repo
+    command: feast serve --host 0.0.0.0 --port 6566
+    depends_on:
+      - redis
     networks:
       - app_network
 

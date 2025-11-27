@@ -151,7 +151,7 @@ async def run_training(task_id: str, fn, *args):
 def startup():
     global redis_client
     try:
-        setup_dagsh | ub_mlflow()
+        setup_dagshub_mlflow()
         initialize_dirs()
         redis_client = redis.Redis(host="redis", port=6379, db=0)
         redis_client.ping()
