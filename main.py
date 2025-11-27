@@ -199,7 +199,20 @@ async def get_task_status(task_id: str):
     status = task_status.get(task_id.lower())
     if not status:
         raise HTTPException(404, "Task not found")
-    return status
+    
+    # Calculate elapsed time if running
+    response = status.copy()
+    if response.get("status") == "running" and "start_time" in response:
+        try:
+            start_dt = datetime.strptime(response["start_time"], "%Y-%m-%d %H:%M:%S")
+            response["elapsed_seconds"] = int((datetime.now() - start_dt).total_seconds())
+        except Exception:
+            pass
+    
+    # User requested to remove start_time
+    response.pop("start_time", None)
+            
+    return response
 
 @app.post("/predict-parent")
 async def predict_parent_api():
