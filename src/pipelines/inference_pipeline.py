@@ -130,10 +130,34 @@ def _generate_plot(history_df, forecast_data, ticker):
 def predict_parent():
     """Predict using locally saved parent model."""
     try:
+        # Fetch features from Feast (Demonstration - for consistency with child)
+        if store:
+            try:
+                feature_vector = store.get_online_features(
+                    features=[
+                        "stock_stats:Open",
+                        "stock_stats:High",
+                        "stock_stats:Low",
+                        "stock_stats:Close",
+                        "stock_stats:Volume",
+                        "stock_stats:RSI14",
+                        "stock_stats:MACD",
+                    ],
+                    entity_rows=[{"ticker": cfg.parent_ticker}]
+                ).to_dict()
+                logger.info(f"✅ Fetched online features from Feast for {cfg.parent_ticker}: {feature_vector}")
+            except Exception as e:
+                logger.warning(f"Failed to fetch from Feast: {e}")
+
         ticker = cfg.parent_ticker
         model, scaler = _load_local_model(ticker, "parent")
         df = fetch_ohlcv(ticker)
         preds = predict_one_step_and_week(model, df, scaler, ticker)
+
+        # Generate plot
+        plot_b64 = _generate_plot(df, preds["predictions"]["full_forecast"], ticker)
+        if plot_b64:
+            preds["plot_base64"] = plot_b64
 
         logger.info(f"✅ Parent prediction completed for {ticker}")
         return preds

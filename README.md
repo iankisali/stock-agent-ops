@@ -20,6 +20,11 @@ curl -X GET http://localhost:8000/status/parent
 curl -X GET http://localhost:8000/status/aapl
 ```
 
+- Predict parent model
+```bash
+curl -X POST http://localhost:8000/predict-parent -H "Content-Type: application/json" -d '{"ticker": "parent"}'
+```
+
 - Predict child model
 ```bash
 curl -X POST http://localhost:8000/predict-child -H "Content-Type: application/json" -d '{"ticker": "AAPL"}'

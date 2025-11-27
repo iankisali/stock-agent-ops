@@ -2,6 +2,7 @@ import json
 import asyncio
 import time
 import os
+from datetime import datetime
 from typing import Dict, Any
 import uvicorn
 import redis
@@ -15,7 +16,7 @@ from prometheus_client import (
     generate_latest, CONTENT_TYPE_LATEST, CollectorRegistry,
     Gauge, Counter, Histogram, PROCESS_COLLECTOR, PLATFORM_COLLECTOR, GC_COLLECTOR
 )
-
+from src.rate_limiter import simple_rate_limit
 from src.pipelines.training_pipeline import train_parent, train_child
 from src.pipelines.inference_pipeline import predict_parent, predict_child
 from src.utils import setup_dagshub_mlflow, initialize_dirs
@@ -101,7 +102,7 @@ async def run_training(task_id: str, fn, *args):
     task_status[task_id] = {
         "status": "running",
         "progress": 0,
-        "start_time": time.time()
+        "start_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     }
     TRAINING_STATUS.labels(task_id).set(1)
 
@@ -127,7 +128,7 @@ async def run_training(task_id: str, fn, *args):
             "status": "completed",
             "progress": 100,
             "duration": round(duration, 2),
-            "completed_at": time.time(),
+            "completed_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "result": result or "success"
         }
         TRAINING_STATUS.labels(task_id).set(2)
@@ -171,6 +172,7 @@ async def health():
 
 @app.post("/train-parent")
 async def train_parent_api():
+    simple_rate_limit(redis_client, "train_parent", 1, 60)
     task_id = "parent"
     if task_status.get(task_id, {}).get("status") == "running":
         return JSONResponse({"status": "already_running", "task_id": task_id}, status_code=409)
@@ -179,6 +181,7 @@ async def train_parent_api():
 
 @app.post("/train-child")
 async def train_child_api(request: Request):
+    simple_rate_limit(redis_client, "train_child", 2, 60)
     data = await request.json()
     ticker = data.get("ticker", "").strip()
     if not ticker:
@@ -200,13 +203,20 @@ async def get_task_status(task_id: str):
 
 @app.post("/predict-parent")
 async def predict_parent_api():
+    simple_rate_limit(redis_client, "predict_parent", 20, 60)
     with PREDICTION_LATENCY.labels("parent").time():
-        result, cached = get_or_set_cache("predict_parent", predict_parent)
+        try:
+            result, cached = get_or_set_cache("predict_parent", predict_parent)
+        except PipelineError:
+            logger.warning("Parent model missing, training on-demand...")
+            await run_training("parent", train_parent)
+            result, cached = get_or_set_cache("predict_parent", predict_parent)
     PREDICTION_COUNTER.labels("parent").inc()
     return {"cached": cached, "result": result}
 
 @app.post("/predict-child")
 async def predict_child_api(request: Request):
+    simple_rate_limit(redis_client, "predict_child", 20, 60)
     data = await request.json()
     ticker = data.get("ticker", "").strip()
     if not ticker:
