@@ -9,6 +9,9 @@ wheels/
 # Virtual environments
 .venv
 
+# .ENV
+.env
+
 # MLflow
 mlruns/
 mlflow.db
@@ -24,3 +27,4 @@ outputs/
 data/
 *.db 
 grafana/plugins/*
+
