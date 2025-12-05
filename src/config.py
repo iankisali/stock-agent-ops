@@ -15,6 +15,8 @@ class Config:
     start_date: str = "2004-08-19"  # Google's IPO date
     parent_epochs: int = 20
     child_epochs: int = 10
+    transfer_strategy: str = "freeze"  # Options: "freeze", "fine_tune"
+    fine_tune_lr: float = 1e-4
     parent_dir: str = "outputs/parent"
     workdir: str = "outputs"
 

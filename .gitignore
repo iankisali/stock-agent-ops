@@ -19,3 +19,8 @@ logs
 
 # Outputs
 outputs/
+
+# No data 
+data/
+*.db 
+plugins/

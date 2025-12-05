@@ -160,12 +160,26 @@ def train_child(ticker: str) -> Dict:
             parent_model.load_state_dict(torch.load(parent_model_path, map_location=cfg.device))
             logger.info(f"🔁 Loaded parent weights from {parent_model_path}")
 
-            # Freeze LSTM layers for transfer learning
-            for name, param in parent_model.named_parameters():
-                if "lstm" in name:
-                    param.requires_grad = False
+            # Transfer Learning Strategy
+            learning_rate = 3e-4
+            
+            if cfg.transfer_strategy == "freeze":
+                logger.info("❄️ Strategy: Freeze LSTM layers")
+                for name, param in parent_model.named_parameters():
+                    if "lstm" in name:
+                        param.requires_grad = False
+            elif cfg.transfer_strategy == "fine_tune":
+                logger.info(f"🔥 Strategy: Fine-tune all layers (lr={cfg.fine_tune_lr})")
+                for param in parent_model.parameters():
+                    param.requires_grad = True
+                learning_rate = cfg.fine_tune_lr
+            else:
+                logger.warning(f"⚠️ Unknown strategy '{cfg.transfer_strategy}', defaulting to 'freeze'")
+                for name, param in parent_model.named_parameters():
+                    if "lstm" in name:
+                        param.requires_grad = False
 
-            model = fit_model(parent_model, train_loader, val_loader, epochs=epochs, lr=3e-4)
+            model = fit_model(parent_model, train_loader, val_loader, epochs=epochs, lr=learning_rate)
 
             child_dir = os.path.join(workdir, ticker)
             torch_path, scaler_path = _get_output_paths(child_dir, ticker, "child")

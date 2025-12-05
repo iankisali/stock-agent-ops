@@ -16,3 +16,8 @@ mlartifacts/
 
 # Logs
 logs
+
+# No data 
+data/
+*.db 
+plugins/
