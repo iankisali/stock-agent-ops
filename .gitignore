@@ -23,4 +23,4 @@ outputs/
 # No data 
 data/
 *.db 
-plugins/
+grafana/plugins/*
