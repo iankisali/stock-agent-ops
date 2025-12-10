@@ -18,12 +18,13 @@ from src.exception import PipelineError
 logger = get_logger()
 cfg = Config()
 
-# Initialize Feast Feature Store
-try:
-    store = FeatureStore(repo_path="feature_repo")
-except Exception as e:
-    logger.warning(f"Feast Feature Store not initialized: {e}")
-    store = None
+# Initialize Feast Feature Store (Lazy Load)
+def get_feature_store():
+    try:
+        return FeatureStore(repo_path="feature_repo")
+    except Exception as e:
+        logger.warning(f"Feast Feature Store not initialized: {e}")
+        return None
 
 
 # =============================================================
@@ -72,55 +73,7 @@ def _load_local_model(ticker: str, model_type: str):
         raise PipelineError(f"Local model load failed for {ticker}: {e}")
 
 
-# =============================================================
-# 📊 PLOTTING HELPER
-# =============================================================
 
-def _generate_plot(history_df, forecast_data, ticker):
-    """
-    Generates a plot of historical data and forecast, returns base64 string.
-    Also logs the figure to MLflow.
-    """
-    try:
-        # Prepare data
-        last_30_days = history_df.tail(30)
-        dates = pd.to_datetime(last_30_days["date"])
-        closes = last_30_days["close"]
-        
-        forecast_dates = [pd.to_datetime(d["date"]) for d in forecast_data]
-        forecast_closes = [d["close"] for d in forecast_data]
-
-        # Create plot
-        plt.figure(figsize=(10, 6))
-        plt.plot(dates, closes, label="Historical (Last 30 Days)", color="blue")
-        plt.plot(forecast_dates, forecast_closes, label="Forecast", color="red", linestyle="--")
-        
-        plt.title(f"Price Prediction for {ticker}")
-        plt.xlabel("Date")
-        plt.ylabel("Close Price")
-        plt.legend()
-        plt.grid(True)
-        plt.xticks(rotation=45)
-        plt.tight_layout()
-
-        # Save to buffer
-        buf = io.BytesIO()
-        plt.savefig(buf, format="png")
-        buf.seek(0)
-        plot_base64 = base64.b64encode(buf.getvalue()).decode("utf-8")
-        
-        # Log to MLflow
-        try:
-            mlflow.log_figure(plt.gcf(), f"{ticker}_prediction_plot.png")
-        except Exception as e:
-            logger.warning(f"Failed to log figure to MLflow: {e}")
-
-        plt.close()
-        return plot_base64
-
-    except Exception as e:
-        logger.error(f"Plot generation failed: {e}")
-        return None
 
 
 # =============================================================
@@ -130,7 +83,12 @@ def _generate_plot(history_df, forecast_data, ticker):
 def predict_parent():
     """Predict using locally saved parent model."""
     try:
-        # Fetch features from Feast (Demonstration - for consistency with child)
+        ticker = cfg.parent_ticker
+        model, scaler = _load_local_model(ticker, "parent")
+        df = fetch_ohlcv(ticker)
+
+        # Fetch features from Feast (Demonstration)
+        store = get_feature_store()
         if store:
             try:
                 feature_vector = store.get_online_features(
@@ -148,16 +106,22 @@ def predict_parent():
                 logger.info(f"✅ Fetched online features from Feast for {cfg.parent_ticker}: {feature_vector}")
             except Exception as e:
                 logger.warning(f"Failed to fetch from Feast: {e}")
-
-        ticker = cfg.parent_ticker
-        model, scaler = _load_local_model(ticker, "parent")
-        df = fetch_ohlcv(ticker)
         preds = predict_one_step_and_week(model, df, scaler, ticker)
 
-        # Generate plot
-        plot_b64 = _generate_plot(df, preds["predictions"]["full_forecast"], ticker)
-        if plot_b64:
-            preds["plot_base64"] = plot_b64
+        # Prepare features (history) for frontend plotting
+        # Get last 30 days of history
+        history_df = df.tail(30).copy()
+        # Normalize columns keys
+        history_df.columns = [c.lower() for c in history_df.columns]
+        
+        if "date" in history_df.columns:
+             preds["history"] = history_df[["date", "close"]].to_dict(orient="records")
+        else:
+             # If date is index
+             hist_recs = []
+             for idx, row in history_df.iterrows():
+                 hist_recs.append({"date": str(idx.date()), "close": row["close"]})
+             preds["history"] = hist_recs
 
         logger.info(f"✅ Parent prediction completed for {ticker}")
         return preds
@@ -170,7 +134,11 @@ def predict_parent():
 def predict_child(ticker: str):
     """Predict using locally saved child model."""
     try:
-        # Fetch features from Feast (Demonstration)
+        model, scaler = _load_local_model(ticker, "child")
+        df = fetch_ohlcv(ticker)
+        
+        # Fetch features from Feast (Demonstration) - Run AFTER fetch_ohlcv to ensure data is materialized
+        store = get_feature_store()
         if store:
             try:
                 feature_vector = store.get_online_features(
@@ -188,18 +156,31 @@ def predict_child(ticker: str):
                 logger.info(f"✅ Fetched online features from Feast for {ticker}: {feature_vector}")
             except Exception as e:
                 logger.warning(f"Failed to fetch from Feast: {e}")
-
-        model, scaler = _load_local_model(ticker, "child")
-        df = fetch_ohlcv(ticker)
         preds = predict_one_step_and_week(model, df, scaler, ticker)
 
-        # Generate plot
-        plot_b64 = _generate_plot(df, preds["predictions"]["full_forecast"], ticker)
-        if plot_b64:
-            preds["plot_base64"] = plot_b64
+        # Prepare features (history) for frontend plotting
+        # Get last 30 days of history
+        history_df = df.tail(30).copy()
+        # Normalize columns keys
+        history_df.columns = [c.lower() for c in history_df.columns]
+        
+        if "date" in history_df.columns:
+             # Ensure date is string for JSON serialization if it's timestamp
+             # yfinance dates are usually Timestamps.
+             if not isinstance(history_df["date"].iloc[0], str):
+                  history_df["date"] = history_df["date"].astype(str)
+             preds["history"] = history_df[["date", "close"]].to_dict(orient="records")
+        else:
+             # If date is index
+             hist_recs = []
+             for idx, row in history_df.iterrows():
+                 hist_recs.append({"date": str(idx.date()), "close": row["close"]})
+             preds["history"] = hist_recs
 
         logger.info(f"✅ Child prediction completed for {ticker}")
         return preds
+
+
 
     except Exception as e:
         logger.error(f"Child prediction failed: {e}")

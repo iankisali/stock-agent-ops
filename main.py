@@ -1,21 +1,20 @@
+
 import json
 import asyncio
 import time
 import os
 from datetime import datetime
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 import uvicorn
 import redis
 import psutil
 from concurrent.futures import ThreadPoolExecutor
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, HTTPException, BackgroundTasks
 from fastapi.responses import Response, JSONResponse
 
 from prometheus_fastapi_instrumentator import Instrumentator
-from prometheus_client import (
-    generate_latest, CONTENT_TYPE_LATEST, CollectorRegistry,
-    Gauge, Counter, Histogram, PROCESS_COLLECTOR, PLATFORM_COLLECTOR, GC_COLLECTOR
-)
+from prometheus_client import generate_latest, CONTENT_TYPE_LATEST, CollectorRegistry, Gauge, Counter, Histogram
+
 from src.rate_limiter import simple_rate_limit
 from src.pipelines.training_pipeline import train_parent, train_child
 from src.pipelines.inference_pipeline import predict_parent, predict_child
@@ -23,39 +22,32 @@ from src.utils import setup_dagshub_mlflow, initialize_dirs
 from src.logger import get_logger
 from src.exception import PipelineError
 
+# Agent Imports
+from src.agents.graph import agent_app
+from langchain_core.messages import HumanMessage
+from src.memory.cache import RedisSemanticCache
+import src.memory.cache as cache_module
+
 # =========================================================
 # SETUP
 # =========================================================
 setup_dagshub_mlflow()
 logger = get_logger()
 BASE_PATH = "outputs"
-app = FastAPI(title="MLOps Stock Pipeline", version="3.0")
+app = FastAPI(title="MLOps Stock Pipeline", version="3.1")
 
 redis_client = None
 executor = ThreadPoolExecutor(max_workers=4)
-
-# Individual task status — clean & scalable
-task_status: Dict[str, Dict[str, Any]] = {}
 
 # =========================================================
 # Prometheus Metrics
 # =========================================================
 registry = CollectorRegistry()
-registry.register(GC_COLLECTOR)
-registry.register(PLATFORM_COLLECTOR)
-registry.register(PROCESS_COLLECTOR)
-
 SYSTEM_CPU = Gauge("system_cpu_percent", "CPU percent", registry=registry)
 SYSTEM_RAM = Gauge("system_ram_used_mb", "RAM MB", registry=registry)
-SYSTEM_DISK = Gauge("system_disk_used_mb", "Disk MB", registry=registry)
 REDIS_STATUS = Gauge("redis_up", "Redis up=1/down=0", registry=registry)
-
 TRAINING_STATUS = Gauge("training_status", "0=idle 1=running 2=completed", ["task_id"], registry=registry)
-TRAINING_DURATION = Histogram("training_duration_seconds", "Training duration", ["task_id"], registry=registry)
-
 PREDICTION_COUNTER = Counter("prediction_total", "Total predictions", ["type"], registry=registry)
-PREDICTION_LATENCY = Histogram("prediction_latency_seconds", "Prediction latency", ["type"], registry=registry)
-
 CACHE_HIT = Counter("redis_cache_hit_total", "Cache hits", ["key"], registry=registry)
 CACHE_MISS = Counter("redis_cache_miss_total", "Cache misses", ["key"], registry=registry)
 
@@ -64,86 +56,69 @@ Instrumentator(registry=registry).instrument(app)
 def refresh_system_metrics():
     SYSTEM_CPU.set(psutil.cpu_percent())
     SYSTEM_RAM.set(psutil.virtual_memory().used / (1024**2))
-    SYSTEM_DISK.set(psutil.disk_usage("/").used / (1024**2))
 
-# =========================================================
-# Redis Helper
-# =========================================================
-def get_or_set_cache(key: str, compute_fn, expire: int = 86400):
-    refresh_system_metrics()
+# Task Status Tracking (Redis)
+def get_task_key(task_id: str) -> str:
+    return f"task_status:{task_id.lower()}"
+
+def save_task_status(task_id: str, status_data: Dict[str, Any], ttl: int = 3600):
+    """Save task status to Redis with TTL."""
     try:
-        val = redis_client.get(key)
-        if val is not None:
-            CACHE_HIT.labels(key).inc()
-            return json.loads(val), True
-        result = compute_fn()
-        redis_client.set(key, json.dumps(result), ex=expire)
-        CACHE_MISS.labels(key).inc()
-        return result, False
+        if redis_client:
+            redis_client.set(get_task_key(task_id), json.dumps(status_data), ex=ttl)
     except Exception as e:
-        logger.error(f"Redis error: {e}")
-        return compute_fn(), False
+        logger.error(f"Failed to save task status for {task_id}: {e}")
 
-# =========================================================
-# Auto-cleanup old tasks (10 minutes)
-# =========================================================
-def schedule_cleanup(task_id: str, delay: int = 600):
-    async def cleanup():
-        await asyncio.sleep(delay)
-        task_status.pop(task_id, None)
-        TRAINING_STATUS.labels(task_id).set(0)
-    asyncio.create_task(cleanup())
+def get_task_status_redis(task_id: str) -> Optional[Dict[str, Any]]:
+    """Get task status from Redis."""
+    try:
+        if redis_client:
+            val = redis_client.get(get_task_key(task_id))
+            if val:
+                return json.loads(val)
+    except Exception as e:
+        logger.error(f"Failed to get task status for {task_id}: {e}")
+    return None
 
-# =========================================================
-# Training Runner
-# =========================================================
-async def run_training(task_id: str, fn, *args):
-    task_id = task_id.lower()
-    task_status[task_id] = {
-        "status": "running",
-        "progress": 0,
-        "start_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    }
-    TRAINING_STATUS.labels(task_id).set(1)
-
+async def run_training_worker(task_id: str, fn, *args):
+    """Actual training worker (runs in thread pool)."""
     loop = asyncio.get_event_loop()
-    start = time.time()
-
-    # Background progress updater
-    def update_progress():
-        for p in range(10, 96, 10):
-            if task_status.get(task_id, {}).get("status") == "running":
-                task_status[task_id]["progress"] = p
-            time.sleep(3)
-        if task_status.get(task_id, {}).get("status") == "running":
-            task_status[task_id]["progress"] = 95
-
-    loop.run_in_executor(executor, update_progress)
-
     try:
         result = await loop.run_in_executor(executor, fn, *args)
-        duration = time.time() - start
-
-        task_status[task_id] = {
-            "status": "completed",
-            "progress": 100,
-            "duration": round(duration, 2),
-            "completed_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "result": result or "success"
-        }
+        
+        status_data = {"status": "completed", "result": result, "completed_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+        save_task_status(task_id, status_data, ttl=3600) # Keep completed status for 1 hour
+        
         TRAINING_STATUS.labels(task_id).set(2)
-        TRAINING_DURATION.labels(task_id).observe(duration)
-        schedule_cleanup(task_id)
-
     except Exception as e:
-        task_status[task_id] = {
-            "status": "failed",
-            "progress": 0,
-            "error": str(e)
-        }
+        status_data = {"status": "failed", "error": str(e), "failed_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+        save_task_status(task_id, status_data, ttl=3600)
+        
         TRAINING_STATUS.labels(task_id).set(0)
-        logger.error(f"Training failed for {task_id}: {e}")
-        schedule_cleanup(task_id)
+        logger.error(f"Training failed: {e}")
+
+async def run_blocking_fn(fn, *args):
+    """Run a blocking function in the thread pool."""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(executor, fn, *args)
+
+async def run_training(task_id: str, fn, *args):
+    """Start training in background and return immediately."""
+    task_id = task_id.lower()
+    
+    # Check if already running using Redis
+    current_status = get_task_status_redis(task_id)
+    if current_status and current_status.get("status") == "running":
+        return
+        
+    # Set initial status
+    status_data = {"status": "running", "start_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+    save_task_status(task_id, status_data, ttl=7200) # 2 hours max run time assumption
+    
+    TRAINING_STATUS.labels(task_id).set(1)
+    
+    # Spawn background task
+    asyncio.create_task(run_training_worker(task_id, fn, *args))
 
 # =========================================================
 # Startup
@@ -152,53 +127,274 @@ async def run_training(task_id: str, fn, *args):
 def startup():
     global redis_client
     try:
-        setup_dagshub_mlflow()
         initialize_dirs()
         redis_client = redis.Redis(host="redis", port=6379, db=0)
         redis_client.ping()
         REDIS_STATUS.set(1)
-        logger.info("Redis connected")
+        
+        # Initialize Agent Cache
+        cache_module.cache_instance = RedisSemanticCache(host="redis", port=6379)
+        logger.info("✅ Systems online (Redis, MLflow, Agents)")
     except Exception as e:
         REDIS_STATUS.set(0)
-        logger.error(f"Redis failed: {e}")
+        logger.error(f"Startup failure: {e}")
 
 # =========================================================
-# Routes
+# Core Routes
 # =========================================================
 @app.get("/health")
-async def health():
-    refresh_system_metrics()
+def health():
     return {"status": "healthy"}
 
-@app.post("/train-parent")
-async def train_parent_api():
-    simple_rate_limit(redis_client, "train_parent", 1, 60)
-    task_id = "parent"
-    if task_status.get(task_id, {}).get("status") == "running":
-        return JSONResponse({"status": "already_running", "task_id": task_id}, status_code=409)
-    asyncio.create_task(run_training(task_id, train_parent))
-    return {"status": "started", "task_id": task_id}
-
-@app.post("/train-child")
-async def train_child_api(request: Request):
-    simple_rate_limit(redis_client, "train_child", 2, 60)
+@app.post("/analyze")
+async def analyze_stock(request: Request, background_tasks: BackgroundTasks):
+    """
+    Unified Endpoint: Train -> Predict -> Report
+    """
     data = await request.json()
-    ticker = data.get("ticker", "").strip()
+    ticker = data.get("ticker", "").strip().upper()
     if not ticker:
         raise HTTPException(400, "ticker is required")
     
     task_id = ticker.lower()
-    if task_status.get(task_id, {}).get("status") == "running":
-        return JSONResponse({"status": "already_running", "task_id": task_id}, status_code=409)
     
-    asyncio.create_task(run_training(task_id, train_child, ticker))
+    # 1. Check Model / Train
+    model_missing = False
+    try:
+        # Try a dummy prediction (offloaded)
+        await run_blocking_fn(predict_child, ticker)
+    except PipelineError:
+        model_missing = True
+    except Exception:
+         # Generic catch for prediction issues implying model might be missing or broken
+         # But usually PipelineError is specific. 
+         # Optimization: Check file existence directly? 
+         # For now, stick to logic, but catch generic to be safe.
+         pass
+    
+    if model_missing:
+        # If model is missing, we must train it first.
+        # For this synchronous workflow, we await the training.
+        logger.info(f"Model missing for {ticker}, starting training...")
+        
+        # Check running status
+        status = get_task_status_redis(task_id)
+        if status and status.get("status") == "running":
+            # Wait for existing training
+            while True:
+                status = get_task_status_redis(task_id)
+                if not status or status.get("status") != "running":
+                    break
+                await asyncio.sleep(1)
+        else:
+            await run_training(task_id, train_child, ticker)
+            
+        # Re-check status
+        status = get_task_status_redis(task_id)
+        if status and status.get("status") == "failed":
+            raise HTTPException(500, f"Training failed for {ticker}")
+
+    # 2. Predict (Get 7-day forecast)
+    try:
+        # Offload prediction calculation to thread pool
+        # get_or_set_cache is sync, so we wrap the whole thing
+        def get_preds():
+            return get_or_set_cache(f"predict_child_{ticker.lower()}", lambda: predict_child(ticker), expire=3600)
+            
+        predictions, _ = await run_blocking_fn(get_preds)
+    except Exception as e:
+         raise HTTPException(500, f"Prediction failed: {e}")
+
+    # 3. Generate Report via Agents
+    try:
+        # We format a special prompt for the agent
+        prompt = f"""
+        Generate a detailed financial report for {ticker}.
+        
+        AI Prediction Data (Next 7 days):
+        {predictions}
+        
+        Tasks:
+        1. Use Yahoo Finance tool to get latest news and current price.
+        2. Analyze the trend of the predictions.
+        3. Combine technicals (from predictions) and fundamentals/sentiment (from news).
+        4. Produce a Markdown report with sections: 'Executive Summary', 'Market Analysis', 'Prediction Analysis', 'Risk Factors', and 'Final Recommendation'.
+        """
+        
+        # Offload agent invocation
+        def invoke_agent():
+            return agent_app.invoke(
+                {"messages": [HumanMessage(content=prompt)]},
+                config={"configurable": {"thread_id": data.get("thread_id", "default")}}
+            )
+            
+        result = await run_blocking_fn(invoke_agent)
+        report_content = result["messages"][-1].content
+    except Exception as e:
+        logger.error(f"Agent analysis failed: {e}")
+        report_content = "Analysis failed due to an internal error."
+
+    return {
+        "ticker": ticker,
+        "action": "Analysis Completed",
+        "predictions": predictions,
+        "report": report_content
+    }
+
+@app.post("/agent/chat")
+async def agent_chat(request: Request):
+    """Direct interaction with the AI Agent."""
+    data = await request.json()
+    user_msg = data.get("message")
+    thread_id = data.get("thread_id", "default")
+    
+    if not user_msg:
+        raise HTTPException(400, "message is required")
+
+    try:
+        # Offload Invoke LangGraph agent
+        def invoke_chat():
+            return agent_app.invoke(
+                {"messages": [HumanMessage(content=user_msg)]},
+                config={"configurable": {"thread_id": thread_id}}
+            )
+        
+        result = await run_blocking_fn(invoke_chat)
+        # Extract last message content
+        response_content = result["messages"][-1].content
+        return {"response": response_content}
+    except Exception as e:
+        logger.error(f"Agent chat failed: {e}")
+        raise HTTPException(500, str(e))
+
+# =========================================================
+# Granular Endpoints (Restored)
+# =========================================================
+
+@app.post("/train-parent")
+async def train_parent_endpoint():
+    """Trigger parent model training."""
+    task_id = "parent_training"
+    if get_task_status_redis(task_id) and get_task_status_redis(task_id).get("status") == "running":
+         return {"status": "already running", "task_id": task_id}
+         
+    await run_training(task_id, train_parent)
     return {"status": "started", "task_id": task_id}
+
+@app.post("/train-child")
+async def train_child_endpoint(request: Request):
+    """Trigger child model training."""
+    data = await request.json()
+    ticker = data.get("ticker", "").strip().upper()
+    if not ticker:
+        raise HTTPException(400, "ticker is required")
+        
+    task_id = ticker.lower()
+    
+    # Logic Fix: Check if Parent Model exists
+    # Assuming standard path from Config
+    from src.config import Config
+    cfg = Config()
+    parent_path = os.path.join(cfg.parent_dir, f"{cfg.parent_ticker}_parent_model.pt")
+    
+    if not os.path.exists(parent_path):
+        logger.warning("Parent model missing. Triggering parent training first.")
+        # Trigger parent training (Background)
+        
+        parent_status = get_task_status_redis("parent_training")
+        if not parent_status or parent_status.get("status") != "completed":
+             await run_training("parent_training", train_parent)
+             # Check if it started running
+             parent_status = get_task_status_redis("parent_training")
+             if parent_status and parent_status.get("status") == "running":
+                 return {"status": "started_parent", "task_id": "parent_training", "detail": "Parent model missing. Training parent first."}
+    
+    # Check if already running (Redis)
+    curr_status = get_task_status_redis(task_id)
+    if curr_status and curr_status.get("status") == "running":
+        return {"status": "running", "task_id": task_id, "detail": "Training already in progress"}
+
+    await run_training(task_id, train_child, ticker)
+    return {"status": "started", "task_id": task_id}
+
+# =========================================================
+# Helpers
+# =========================================================
+def get_or_set_cache(key: str, compute_fn, expire: int = 86400):
+    """Helper to check Redis cache or compute and cache."""
+    refresh_system_metrics()
+    try:
+        if redis_client:
+            val = redis_client.get(key)
+            if val:
+                CACHE_HIT.labels(key).inc()
+                return json.loads(val), True
+        
+        result = compute_fn()
+        
+        if redis_client:
+            redis_client.set(key, json.dumps(result), ex=expire)
+            CACHE_MISS.labels(key).inc()
+        return result, False
+    except Exception as e:
+        logger.error(f"Redis cache error: {e}")
+        return compute_fn(), False
+
+@app.post("/predict-parent")
+async def predict_parent_endpoint():
+    """Get parent model predictions."""
+    try:
+        return {"result": await run_blocking_fn(predict_parent)}
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+@app.post("/predict-child")
+async def predict_child_endpoint(request: Request, response: Response):
+    """Get child model predictions."""
+    data = await request.json()
+    ticker = data.get("ticker", "").strip().upper()
+    if not ticker:
+        raise HTTPException(400, "ticker is required")
+        
+    task_id = ticker.lower()
+
+    try:
+        # Cache layer for raw predictions
+        def get_preds():
+            return get_or_set_cache(f"predict_child_{ticker.lower()}", lambda: predict_child(ticker), expire=1800)
+            
+        preds, _ = await run_blocking_fn(get_preds)
+        return {"result": preds}
+    except (FileNotFoundError, PipelineError) as e:
+        # Specific handling for missing models -> Auto-train
+        if "Missing" in str(e) or "not found" in str(e):
+            logger.info(f"Model missing for {ticker}, triggering auto-training.")
+            
+            # Check if already running
+            status = get_task_status_redis(task_id)
+            if status and status.get("status") == "running":
+                 response.status_code = 202
+                 return {"status": "training", "detail": "Training in progress. Please retry later."}
+            
+            # Trigger training
+            await run_training(task_id, train_child, ticker)
+            response.status_code = 202
+            return {"status": "training_started", "detail": f"Model for {ticker} missing. Training started."}
+            
+        raise HTTPException(500, str(e))
+    except Exception as e:
+        raise HTTPException(500, str(e))
 
 @app.get("/status/{task_id}")
 async def get_task_status(task_id: str):
-    status = task_status.get(task_id.lower())
+    """Check status of background training task (Async)."""
+    tid = task_id.lower()
+    if tid == "parent":
+        tid = "parent_training"
+        
+    status = get_task_status_redis(tid)
     if not status:
-        raise HTTPException(404, "Task not found")
+        raise HTTPException(404, f"Task '{task_id}' not found.")
     
     # Calculate elapsed time if running
     response = status.copy()
@@ -209,70 +405,90 @@ async def get_task_status(task_id: str):
         except Exception:
             pass
     
-    # User requested to remove start_time
+    # Remove start_time for cleaner output
     response.pop("start_time", None)
             
     return response
 
-@app.post("/predict-parent")
-async def predict_parent_api():
-    simple_rate_limit(redis_client, "predict_parent", 20, 60)
-    with PREDICTION_LATENCY.labels("parent").time():
-        try:
-            result, cached = get_or_set_cache("predict_parent", predict_parent)
-        except PipelineError:
-            logger.warning("Parent model missing, training on-demand...")
-            await run_training("parent", train_parent)
-            result, cached = get_or_set_cache("predict_parent", predict_parent)
-    PREDICTION_COUNTER.labels("parent").inc()
-    return {"cached": cached, "result": result}
+@app.delete("/system/reset")
+def reset_system():
+    """Wipe all system data (Redis Cache, Qdrant Memory)."""
+    try:
+        # 1. Wipe Redis
+        if redis_client:
+            redis_client.flushall()
+            logger.info("✅ Redis flushed")
+            
+        # 2. Wipe Qdrant
+        # We need to instantiate client here or reuse if available
+        # Simple approach: use the helper class
+        from src.memory.episodic import EpisodicMemory
+        mem = EpisodicMemory(host="qdrant", port=6333)
+        mem.client.delete_collection(mem.collection_name)
+        mem._ensure_collection() # Recreate empty
+        logger.info("✅ Qdrant wiped")
 
-@app.post("/predict-child")
-async def predict_child_api(request: Request):
-    simple_rate_limit(redis_client, "predict_child", 20, 60)
-    data = await request.json()
-    ticker = data.get("ticker", "").strip()
+        # 3. Wipe Feast (Filesystem)
+        repo_path = os.path.join(os.getcwd(), "feature_repo")
+        data_path = os.path.join(repo_path, "data")
+        
+        # Delete registry and parquet to ensure clean slate
+        # Note: 'src/data/ingestion.py' recreates these
+        for file in ["registry.db", "features.parquet"]:
+             p = os.path.join(data_path, file)
+             if os.path.exists(p):
+                 os.remove(p)
+                 logger.info(f"✅ Deleted Feast file: {p}")
+
+        return {"status": "System Reset Complete", "details": "Redis flushed, Qdrant emptied, Feast registry/data wiped."}
+    except Exception as e:
+        logger.error(f"Reset failed: {e}")
+        raise HTTPException(500, f"Reset failed: {e}")
+
+@app.get("/system/cache")
+def inspect_cache(ticker: Optional[str] = None):
+    """
+    Inspect Redis Cache.
+    - No params: List all tickers with cached predictions.
+    - ?ticker=XYZ: Get cached data for XYZ.
+    """
+    if not redis_client:
+        raise HTTPException(503, "Redis not connected")
+
+    # Pattern for prediction cache
+    pattern = "predict_child_*"
+    # scan_iter is safer than keys for production, but keys is fine here
+    try:
+        keys = [k.decode("utf-8") for k in redis_client.keys(pattern)]
+    except Exception as e:
+         logger.error(f"Redis scan failed: {e}")
+         return {"error": str(e)}
+
+    # Extract ticker names
+    # Key format: predict_child_nvda
+    cached_map = {k.replace("predict_child_", "").upper(): k for k in keys}
+
     if not ticker:
-        raise HTTPException(400, "ticker is required")
+        return {
+            "cached_tickers": list(cached_map.keys()),
+            "count": len(cached_map),
+            "detail": "Pass ?ticker=SYMBOL to see data."
+        }
+    
+    # Fetch specific
+    target_ticker = ticker.strip().upper()
+    target_key = cached_map.get(target_ticker)
+    
+    if not target_key:
+        raise HTTPException(404, f"No cache found for {target_ticker}")
 
-    cache_key = f"predict_child_{ticker.lower()}"
-
-    with PREDICTION_LATENCY.labels("child").time():
-        try:
-            result, cached = get_or_set_cache(cache_key, lambda: predict_child(ticker))
-        except PipelineError:
-            logger.warning(f"Model missing for {ticker}, training on-demand...")
-            await run_training(ticker.lower(), train_child, ticker)
-            result, cached = get_or_set_cache(cache_key, lambda: predict_child(ticker))
-
-    PREDICTION_COUNTER.labels("child").inc()
-    return {"cached": cached, "result": result}
-
-@app.post("/metrics")
-async def get_metrics(request: Request):
-    data = await request.json()
-    ticker = data.get("ticker", "").strip().lower()
-    if not ticker:
-        raise HTTPException(400, "ticker is required")
-
-    if ticker == "parent":
-        path = os.path.join(BASE_PATH, "parent_parent_metrics.json")
-    else:
-        path = os.path.join(BASE_PATH, ticker, f"{ticker}_child_metrics.json")
-
-    if not os.path.exists(path):
-        raise HTTPException(404, "Metrics file not found")
-
-    with open(path) as f:
-        return json.load(f)
+    val = redis_client.get(target_key)
+    return json.loads(val)
 
 @app.get("/metrics")
 async def prometheus_metrics():
     refresh_system_metrics()
     return Response(generate_latest(registry), media_type=CONTENT_TYPE_LATEST)
 
-# =========================================================
-# Run
-# =========================================================
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
