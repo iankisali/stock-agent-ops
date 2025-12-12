@@ -11,11 +11,13 @@ import psutil
 from concurrent.futures import ThreadPoolExecutor
 from fastapi import FastAPI, Request, HTTPException, BackgroundTasks
 from fastapi.responses import Response, JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
 from prometheus_fastapi_instrumentator import Instrumentator
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST, CollectorRegistry, Gauge, Counter, Histogram
 
-from src.rate_limiter import simple_rate_limit
+from src.rate_limiter import rate_limit
 from src.pipelines.training_pipeline import train_parent, train_child
 from src.pipelines.inference_pipeline import predict_parent, predict_child
 from src.utils import setup_dagshub_mlflow, initialize_dirs
@@ -23,10 +25,7 @@ from src.logger import get_logger
 from src.exception import PipelineError
 
 # Agent Imports
-from src.agents.graph import agent_app
-from langchain_core.messages import HumanMessage
-from src.memory.cache import RedisSemanticCache
-import src.memory.cache as cache_module
+from src.agents.graph import analyze_stock
 
 # =========================================================
 # SETUP
@@ -35,6 +34,13 @@ setup_dagshub_mlflow()
 logger = get_logger()
 BASE_PATH = "outputs"
 app = FastAPI(title="MLOps Stock Pipeline", version="3.1")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 redis_client = None
 executor = ThreadPoolExecutor(max_workers=4)
@@ -120,6 +126,12 @@ async def run_training(task_id: str, fn, *args):
     # Spawn background task
     asyncio.create_task(run_training_worker(task_id, fn, *args))
 
+# Dataclass
+class AnalyzeRequest(BaseModel):
+    ticker: str
+    use_fmi: bool = False
+    thread_id: str | None = None
+
 # =========================================================
 # Startup
 # =========================================================
@@ -133,7 +145,7 @@ def startup():
         REDIS_STATUS.set(1)
         
         # Initialize Agent Cache
-        cache_module.cache_instance = RedisSemanticCache(host="redis", port=6379)
+        # cache_module.cache_instance = RedisSemanticCache(host="redis", port=6379)
         logger.info("✅ Systems online (Redis, MLflow, Agents)")
     except Exception as e:
         REDIS_STATUS.set(0)
@@ -146,132 +158,23 @@ def startup():
 def health():
     return {"status": "healthy"}
 
+
 @app.post("/analyze")
-async def analyze_stock(request: Request, background_tasks: BackgroundTasks):
-    """
-    Unified Endpoint: Train -> Predict -> Report
-    """
-    data = await request.json()
-    ticker = data.get("ticker", "").strip().upper()
-    if not ticker:
-        raise HTTPException(400, "ticker is required")
-    
-    task_id = ticker.lower()
-    
-    # 1. Check Model / Train
-    model_missing = False
-    try:
-        # Try a dummy prediction (offloaded)
-        await run_blocking_fn(predict_child, ticker)
-    except PipelineError:
-        model_missing = True
-    except Exception:
-         # Generic catch for prediction issues implying model might be missing or broken
-         # But usually PipelineError is specific. 
-         # Optimization: Check file existence directly? 
-         # For now, stick to logic, but catch generic to be safe.
-         pass
-    
-    if model_missing:
-        # If model is missing, we must train it first.
-        # For this synchronous workflow, we await the training.
-        logger.info(f"Model missing for {ticker}, starting training...")
-        
-        # Check running status
-        status = get_task_status_redis(task_id)
-        if status and status.get("status") == "running":
-            # Wait for existing training
-            while True:
-                status = get_task_status_redis(task_id)
-                if not status or status.get("status") != "running":
-                    break
-                await asyncio.sleep(1)
-        else:
-            await run_training(task_id, train_child, ticker)
-            
-        # Re-check status
-        status = get_task_status_redis(task_id)
-        if status and status.get("status") == "failed":
-            raise HTTPException(500, f"Training failed for {ticker}")
+def analyze(req: AnalyzeRequest):
+    if not req.ticker:
+        raise HTTPException(400, "Ticker required")
 
-    # 2. Predict (Get 7-day forecast)
     try:
-        # Offload prediction calculation to thread pool
-        # get_or_set_cache is sync, so we wrap the whole thing
-        def get_preds():
-            return get_or_set_cache(f"predict_child_{ticker.lower()}", lambda: predict_child(ticker), expire=3600)
-            
-        predictions, _ = await run_blocking_fn(get_preds)
+        return analyze_stock(req.ticker, thread_id=req.thread_id)
     except Exception as e:
-         raise HTTPException(500, f"Prediction failed: {e}")
-
-    # 3. Generate Report via Agents
-    try:
-        # We format a special prompt for the agent
-        prompt = f"""
-        Generate a detailed financial report for {ticker}.
-        
-        AI Prediction Data (Next 7 days):
-        {predictions}
-        
-        Tasks:
-        1. Use Yahoo Finance tool to get latest news and current price.
-        2. Analyze the trend of the predictions.
-        3. Combine technicals (from predictions) and fundamentals/sentiment (from news).
-        4. Produce a Markdown report with sections: 'Executive Summary', 'Market Analysis', 'Prediction Analysis', 'Risk Factors', and 'Final Recommendation'.
-        """
-        
-        # Offload agent invocation
-        def invoke_agent():
-            return agent_app.invoke(
-                {"messages": [HumanMessage(content=prompt)]},
-                config={"configurable": {"thread_id": data.get("thread_id", "default")}}
-            )
-            
-        result = await run_blocking_fn(invoke_agent)
-        report_content = result["messages"][-1].content
-    except Exception as e:
-        logger.error(f"Agent analysis failed: {e}")
-        report_content = "Analysis failed due to an internal error."
-
-    return {
-        "ticker": ticker,
-        "action": "Analysis Completed",
-        "predictions": predictions,
-        "report": report_content
-    }
-
-@app.post("/agent/chat")
-async def agent_chat(request: Request):
-    """Direct interaction with the AI Agent."""
-    data = await request.json()
-    user_msg = data.get("message")
-    thread_id = data.get("thread_id", "default")
-    
-    if not user_msg:
-        raise HTTPException(400, "message is required")
-
-    try:
-        # Offload Invoke LangGraph agent
-        def invoke_chat():
-            return agent_app.invoke(
-                {"messages": [HumanMessage(content=user_msg)]},
-                config={"configurable": {"thread_id": thread_id}}
-            )
-        
-        result = await run_blocking_fn(invoke_chat)
-        # Extract last message content
-        response_content = result["messages"][-1].content
-        return {"response": response_content}
-    except Exception as e:
-        logger.error(f"Agent chat failed: {e}")
-        raise HTTPException(500, str(e))
+        raise HTTPException(500, f"Analysis failed: {e}")
 
 # =========================================================
 # Granular Endpoints (Restored)
 # =========================================================
 
 @app.post("/train-parent")
+@rate_limit(limit=5, window_sec=3600, key_prefix="train_parent")
 async def train_parent_endpoint():
     """Trigger parent model training."""
     task_id = "parent_training"
@@ -282,6 +185,7 @@ async def train_parent_endpoint():
     return {"status": "started", "task_id": task_id}
 
 @app.post("/train-child")
+@rate_limit(limit=5, window_sec=3600, key_prefix="train_child")
 async def train_child_endpoint(request: Request):
     """Trigger child model training."""
     data = await request.json()
@@ -341,6 +245,7 @@ def get_or_set_cache(key: str, compute_fn, expire: int = 86400):
         return compute_fn(), False
 
 @app.post("/predict-parent")
+@rate_limit(limit=40, window_sec=3600, key_prefix="predict_parent")
 async def predict_parent_endpoint():
     """Get parent model predictions."""
     try:
@@ -349,6 +254,7 @@ async def predict_parent_endpoint():
         raise HTTPException(500, str(e))
 
 @app.post("/predict-child")
+@rate_limit(limit=40, window_sec=3600, key_prefix="predict_child")
 async def predict_child_endpoint(request: Request, response: Response):
     """Get child model predictions."""
     data = await request.json()

@@ -1,4 +1,4 @@
-version: "3.9"
+
 
 networks:
   app_network:
@@ -15,6 +15,7 @@ services:
     environment:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
+
     env_file:
       - .env
     depends_on:
@@ -27,29 +28,28 @@ services:
       - ./mlruns:/app/mlruns
       - ./mlartifacts:/app/mlartifacts
       - ./feature_repo:/app/feature_repo
-    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --workers 4
 
   redis:
-    image: redis:7-alpine
+    image: redis/redis-stack:latest
     container_name: redis
     ports:
       - "6379:6379"
+      - "8001:8001"
     restart: unless-stopped
+    volumes:
+      - redis_data:/data
     networks:
       - app_network
 
-  feast-server:
-    image: feastdev/feature-server:latest
-    container_name: feast-server
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: qdrant
     ports:
-      - "6566:6566"
-    environment:
-      - FEAST_USAGE=False
+      - "6333:6333"
     volumes:
-      - ./feature_repo:/app/feature_repo
-    command: feast serve --host 0.0.0.0 --port 6566
-    depends_on:
-      - redis
+      - qdrant_data:/qdrant/storage
     networks:
       - app_network
 
@@ -80,3 +80,18 @@ services:
       - ./grafana/provisioning:/etc/grafana/provisioning
     networks:
       - app_network
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: frontend
+    ports:
+      - "8501:8501"
+    networks:
+      - app_network
+    environment:
+      - API_URL=http://fastapi:8000
+volumes:
+  redis_data:
+  qdrant_data:

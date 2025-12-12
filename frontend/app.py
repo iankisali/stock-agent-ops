@@ -1,154 +1,311 @@
-import streamlit as st
-import requests
-import pandas as pd
-import time
 import os
 import uuid
+import io
+import time
+import requests
+import pandas as pd
 import plotly.graph_objects as go
+import streamlit as st
+from datetime import datetime
 
+# ----------------- CONFIG -----------------
 API_URL = os.getenv("API_URL", "http://localhost:8000")
+st.set_page_config(page_title="AI Financial Analyst", layout="wide", page_icon="📈")
 
-st.set_page_config(page_title="AI Stock Analyst", layout="wide")
+# Custom CSS for Professional Look
+st.markdown("""
+    <style>
+    .stApp {
+        background-color: #0e1117;
+        color: #fafafa;
+    }
+    .metric-card {
+        background-color: #1e2130;
+        padding: 20px;
+        border-radius: 10px;
+        border: 1px solid #2e3140;
+        text-align: center;
+    }
+    .metric-value {
+        font-size: 24px;
+        font-weight: bold;
+        color: #4ade80;
+    }
+    .metric-label {
+        font-size: 14px;
+        color: #9ca3af;
+    }
+    </style>
+    """, unsafe_allow_html=True)
 
-# Session
+# ----------------- SESSION ----------------
 if "session_id" not in st.session_state:
     st.session_state.session_id = str(uuid.uuid4())
 
-st.title("🤖 AI Agent Stock Analyst")
-st.markdown(
-    f"Enterprise Agentic Workflow Demo "
-    f"(Session: `{st.session_state.session_id[:8]}`)"
-)
+# ----------------- SIDEBAR ----------------
+with st.sidebar:
+    st.title("📈 AI Analyst")
+    st.caption("Institutional-grade market intelligence")
+    
+    ticker = st.text_input("Ticker Symbol", value="NVDA", help="e.g., AAPL, TSLA, BTC-USD").strip().upper()
+    run_btn = st.button("Generate Analysis", type="primary", use_container_width=True)
+    
+    st.markdown("---")
+    st.info("Powered by LangGraph & Feast")
+    st.markdown(f"Session: `{st.session_state.session_id[:8]}`")
 
-# ---------------------- INPUT UI -------------------------
-col1, col2 = st.columns([1, 4])
-with col1:
-    ticker = st.text_input("Ticker Symbol", value="NVDA").upper()
-    use_fmi = st.toggle("Use Finnhub News?", value=True)
-    run_btn = st.button("Generate Report", type="primary")
+# ----------------- HELPERS ----------------
+def parse_predictions(preds_raw):
+    """Robustly parse prediction data into forecast/history lists."""
+    forecast, history = [], []
+    
+    if isinstance(preds_raw, list):
+        # Direct list of dicts treatment
+        for item in preds_raw:
+            if isinstance(item, dict):
+                # Heuristic: if it has 'close' and 'date'
+                d = item.get("date") or item.get("dt")
+                c = item.get("close") or item.get("price")
+                if d and c:
+                    forecast.append({"date": str(d), "close": float(c)})
+        return forecast, history
 
-# ---------------------------------------------------------
-def plot_prediction_chart(preds, history, ticker):
-    """Unified price chart."""
-    hist_df = pd.DataFrame(history) if history else pd.DataFrame()
-    pred_df = pd.DataFrame(preds)
+    if isinstance(preds_raw, dict):
+        # Dictionary format
+        candidates = []
+        # Try known keys
+        for k in ["full_forecast", "forecast", "predictions", "data"]:
+            if k in preds_raw and isinstance(preds_raw[k], list):
+                candidates = preds_raw[k]
+                break
+        
+        # If no key found, check values for any list
+        if not candidates:
+            for v in preds_raw.values():
+                if isinstance(v, list):
+                    candidates = v
+                    break
+        
+        for it in candidates:
+            if isinstance(it, dict):
+                d = it.get("date") or it.get("dt")
+                c = it.get("close") or it.get("price")
+                if d and c:
+                    forecast.append({"date": str(d), "close": float(c)})
+                    
+        # History extraction if available
+        if "history" in preds_raw and isinstance(preds_raw["history"], list):
+            for h in preds_raw["history"]:
+                d = h.get("date")
+                c = h.get("close")
+                if d and c:
+                    history.append({"date": str(d), "close": float(c)})
+                    
+        return forecast, history
 
-    # Fix dates
-    if not hist_df.empty:
-        hist_df["date"] = pd.to_datetime(hist_df["date"])
-        hist_df["type"] = "Historical"
+    # String parsing (Fallback)
+    if isinstance(preds_raw, str):
+        lines = [l.strip() for l in preds_raw.splitlines() if l.strip()]
+        for line in lines:
+            if ":" in line and "$" in line:
+                try:
+                    left, right = line.rsplit(":", 1)
+                    d_str = left.strip().split()[-1]
+                    p_str = right.strip().replace("$", "").replace(",", "")
+                    if d_str and p_str:
+                         forecast.append({"date": d_str, "close": float(p_str)})
+                except:
+                    pass
+        return forecast, history
 
-    pred_df["date"] = pd.to_datetime(pred_df["date"])
-    pred_df["type"] = "Forecast"
+    return forecast, history
 
-    # Connect history → forecast visually
-    if not hist_df.empty:
-        last_hist = hist_df.iloc[-1]
-        connector = pd.DataFrame([{
-            "date": last_hist["date"],
-            "close": last_hist["close"],
-            "type": "Forecast"
-        }])
-        pred_df = pd.concat([connector, pred_df], ignore_index=True)
-
-    # Plot
+def plot_chart(forecast, history, ticker):
+    """Create a professional Plotly chart."""
     fig = go.Figure()
 
-    if not hist_df.empty:
+    # Historical
+    if history:
+        hist_df = pd.DataFrame(history)
+        hist_df["date"] = pd.to_datetime(hist_df["date"])
+        hist_df = hist_df.sort_values("date")
+        
         fig.add_trace(go.Scatter(
-            x=hist_df["date"],
+            x=hist_df["date"], 
             y=hist_df["close"],
             mode="lines",
-            name="Historical",
-            line=dict(color="#ff4b4b", width=2)
+            name="History",
+            line=dict(color="#3b82f6", width=2)
+        ))
+        
+        # Connector
+        if forecast:
+            last_hist = hist_df.iloc[-1]
+            last_hist_df = pd.DataFrame([last_hist])
+            # Forecast
+            pred_df = pd.DataFrame(forecast)
+            pred_df["date"] = pd.to_datetime(pred_df["date"])
+            pred_df = pred_df.sort_values("date")
+            
+            # Combine for smooth line
+            combo_df = pd.concat([last_hist_df, pred_df], ignore_index=True)
+            
+            fig.add_trace(go.Scatter(
+                x=combo_df["date"],
+                y=combo_df["close"],
+                mode="lines",
+                name="Forecast",
+                line=dict(color="#10b981", width=2, dash="dash")
+            ))
+    elif forecast:
+        pred_df = pd.DataFrame(forecast)
+        pred_df["date"] = pd.to_datetime(pred_df["date"])
+        fig.add_trace(go.Scatter(
+            x=pred_df["date"],
+            y=pred_df["close"],
+            name="Forecast",
+            line=dict(color="#10b981", width=2, dash="dash")
         ))
 
-    fig.add_trace(go.Scatter(
-        x=pred_df["date"],
-        y=pred_df["close"],
-        mode="lines",
-        name="Forecast",
-        line=dict(color="#00c0f2", width=2)
-    ))
-
     fig.update_layout(
-        title=f"{ticker} Price Forecast",
-        xaxis_title="Date",
-        yaxis_title="Price (USD)",
         template="plotly_dark",
+        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)",
+        xaxis_title=None,
+        yaxis_title="Price (USD)",
         hovermode="x unified",
-        margin=dict(l=20, r=20, t=40, b=20),
-        height=500
+        margin=dict(l=0, r=0, t=10, b=0),
+        height=400,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
     )
-    st.plotly_chart(fig, use_container_width=True)
+    return fig
 
-
-# ---------------------------------------------------------
-#                        MAIN LOGIC
-# ---------------------------------------------------------
+# ----------------- MAIN LOGIC ----------------
 if run_btn:
     if not ticker:
-        st.error("Ticker is required.")
+        st.error("Please enter a ticker symbol.")
         st.stop()
 
-    st.markdown("### 1. Running AI Agentic Workflow...")
-
-    with st.spinner("Fetching predictions + news + generating report..."):
-        try:
-            response = requests.post(
-                f"{API_URL}/analyze",
-                json={
-                    "ticker": ticker,
-                    "use_fmi": use_fmi,
-                    "thread_id": st.session_state.session_id
-                }
-            )
-
-            if response.status_code != 200:
-                st.error(f"API Error: {response.text}")
+    # Placeholder for status
+    status_container = st.container()
+    
+    with status_container:
+        with st.spinner(f"Agents analyzing {ticker}..."):
+            try:
+                payload = {"ticker": ticker, "thread_id": st.session_state.session_id}
+                resp = requests.post(f"{API_URL}/analyze", json=payload, timeout=120)
+            except Exception as e:
+                st.error(f"Connection Failed: {e}")
                 st.stop()
 
-            data = response.json()
+    if resp.status_code != 200:
+        st.error(f"Analysis Error ({resp.status_code}): {resp.text}")
+        st.stop()
 
-        except Exception as e:
-            st.error(f"Connection error: {e}")
-            st.stop()
+    try:
+        data = resp.json()
+        if not data:
+            raise ValueError("Empty response")
+    except Exception:
+        st.error("Invalid response format from Agent.")
+        st.stop()
 
-    # -----------------------------------------------------
-    # 2. VISUALIZATION SECTION
-    # -----------------------------------------------------
-    predictions_raw = data.get("predictions", "")
-    forecast = []
-    history = []
-
-    # Extract forecast list cleanly
-    for line in predictions_raw.split("\n"):
-        if ":" in line and "$" in line:
+    # ---- HANDLING TRAINING STATE ----
+    if data.get("status") == "training":
+        st.warning(f"Constructing Neural Model for {ticker}...")
+        
+        prog_bar = st.progress(0)
+        status_text = st.empty()
+        
+        # Poll Loop
+        while True:
+            time.sleep(2)
             try:
-                date_str = line.split(":")[0].strip()
-                price = float(line.split("$")[-1])
-                forecast.append({"date": date_str, "close": price})
+                st_resp = requests.get(f"{API_URL}/status/{ticker.lower()}")
+                if st_resp.status_code == 200:
+                    sdata = st_resp.json()
+                    status = sdata.get("status")
+                    elapsed = sdata.get("elapsed_seconds", 0)
+                    
+                    if status == "completed":
+                        prog_bar.progress(100)
+                        status_text.success("Model Training Complete. Finalizing Analysis...")
+                        break
+                    elif status == "failed":
+                        status_text.error("Model Training Failed.")
+                        st.stop()
+                    else:
+                        status_text.text(f"Training in progress... ({elapsed}s elapsed)")
+                        prog = min(elapsed * 5, 95)
+                        prog_bar.progress(int(prog))
             except:
                 pass
+        
+        # Retry Analysis
+        with st.spinner("Generating Final Report..."):
+            resp = requests.post(f"{API_URL}/analyze", json=payload, timeout=120)
+            if resp.status_code == 200:
+                data = resp.json()
+            else:
+                st.error("Analysis failed after training.")
+                st.stop()
 
-    if forecast:
-        plot_prediction_chart(forecast, history, ticker)
-    else:
-        st.warning("No forecast data available to visualize.")
+    # ---- DASHBOARD DISPLAY ----
+    
+    # 1. Parse Data
+    report = data.get("report") or data.get("final_report", "")
+    rec = data.get("recommendation", "N/A")
+    conf = data.get("confidence", "N/A")
+    preds_raw = data.get("predictions", {})
+    forecast, history = parse_predictions(preds_raw)
+    
+    # KPIs
+    st.markdown(f"## 🏛️ Analysis: {ticker}")
+    
+    kpi1, kpi2, kpi3 = st.columns(3)
+    
+    latest_price = "N/A"
+    if history:
+        latest_price = f"${history[-1]['close']:.2f}"
+    elif forecast:
+         # Fallback to first forecast if no history
+         latest_price = f"${forecast[0]['close']:.2f}"
 
-    # -----------------------------------------------------
-    # 3. FINAL REPORT
-    # -----------------------------------------------------
-    st.divider()
-    st.markdown("### 2. AI Market Intelligence Report")
+    with kpi1:
+        st.markdown(f"<div class='metric-card'><div class='metric-label'>Latest Price</div><div class='metric-value'>{latest_price}</div></div>", unsafe_allow_html=True)
+    with kpi2:
+        color = "#4ade80" if "BUY" in rec.upper() or "BULL" in rec.upper() else "#f87171"
+        st.markdown(f"<div class='metric-card' style='border-color: {color};'><div class='metric-label'>Recommendation</div><div class='metric-value' style='color: {color}'>{rec}</div></div>", unsafe_allow_html=True)
+    with kpi3:
+        st.markdown(f"<div class='metric-card'><div class='metric-label'>Confidence</div><div class='metric-value'>{conf}</div></div>", unsafe_allow_html=True)
+    
+    st.markdown("---")
+    
+    # TABS
+    tab_report, tab_chart = st.tabs(["📝 Strategic Report", "📊 Technical Forecast"])
+    
+    with tab_report:
+        if report:
+            st.markdown(report)
+            
+            # Download
+            b = io.BytesIO(report.encode("utf-8"))
+            st.download_button("Download Report", data=b, file_name=f"{ticker}_Report.md", mime="text/markdown")
+        else:
+            st.warning("No report content generated.")
+            
+    with tab_chart:
+        fig = plot_chart(forecast, history, ticker)
+        st.plotly_chart(fig, use_container_width=True)
 
-    st.markdown(data.get("report", "_No report generated._"))
-
-    # ---------------- Sidebar -----------------
-st.sidebar.markdown("### Architecture")
-st.sidebar.info("""
-**Frontend:** Streamlit  
-**Backend:** FastAPI  
-**Agent Engine:** LangGraph (Ollama / Mock)  
-**Workflows:** Prediction → Sentiment → Report  
-""")
+else:
+    # Landing Page State
+    st.markdown("### Ready to Analyze")
+    st.markdown("""
+    Enter a stock ticker in the sidebar to begin.
+    
+    **Features:**
+    - 🧠 autonomous multi-agent research
+    - 📈 LSTM technical price forecasting
+    - 📰 Real-time news sentiment analysis
+    """)

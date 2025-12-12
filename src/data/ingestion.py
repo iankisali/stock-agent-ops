@@ -66,13 +66,25 @@ def fetch_ohlcv(ticker: str, start: str = Config().start_date, end: Optional[str
             data_path = os.path.join(repo_path, "data", "features.parquet")
             os.makedirs(os.path.dirname(data_path), exist_ok=True)
             
-            # Append if exists, else write new
-            if os.path.exists(data_path):
-                existing_df = pd.read_parquet(data_path)
-                combined_df = pd.concat([existing_df, feast_df]).drop_duplicates(subset=["ticker", "event_timestamp"])
-                combined_df.to_parquet(data_path)
-            else:
-                feast_df.to_parquet(data_path)
+            # File Lock to prevent race conditions
+            import fcntl
+            lock_path = data_path + ".lock"
+            
+            with open(lock_path, "w") as lock_file:
+                # Acquire exclusive lock (blocking)
+                fcntl.flock(lock_file, fcntl.LOCK_EX)
+                try:
+                    # Check existing again under lock
+                    if os.path.exists(data_path):
+                        existing_df = pd.read_parquet(data_path)
+                        # Append and deduplicate
+                        combined_df = pd.concat([existing_df, feast_df]).drop_duplicates(subset=["ticker", "event_timestamp"])
+                        combined_df.to_parquet(data_path)
+                    else:
+                        feast_df.to_parquet(data_path)
+                finally:
+                    # Release within the with block happens automatically on close, but explicit unlock is good
+                    fcntl.flock(lock_file, fcntl.LOCK_UN)
             
             print(f"✅ Saved features to {data_path}")
 

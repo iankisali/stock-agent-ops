@@ -39,3 +39,15 @@ curl -X GET http://localhost:8000/metrics
 ```bash
 curl -X GET http://localhost:8000/health
 ```
+
+- Reset
+```bash
+curl -X DELETE http://localhost:8000/system/reset
+```
+
+- Cache
+```bash
+curl "http://localhost:8000/system/cache"
+
+curl "http://localhost:8000/system/cache?ticker=AAPL"
+```
