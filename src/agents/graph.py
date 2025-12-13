@@ -2,6 +2,7 @@
 LangGraph assembly + analyze_stock wrapper.
 No optional Finnhub settings.
 """
+import os
 from langgraph.graph import StateGraph, MessagesState, END
 from langgraph.checkpoint.memory import MemorySaver
 from langchain_core.messages import HumanMessage
@@ -9,8 +10,15 @@ from langchain_core.messages import HumanMessage
 from src.agents.nodes import (
     performance_analyst_node,
     market_expert_node,
-    report_generator_node
+    report_generator_node,
+    critic_node
 )
+from src.memory.semantic_cache import SemanticCache
+
+try:
+    from langchain_ollama import OllamaEmbeddings
+except ImportError:
+    OllamaEmbeddings = None
 
 
 class AgentState(MessagesState):
@@ -28,19 +36,79 @@ def build_graph():
     g.add_node("perf", performance_analyst_node)
     g.add_node("news", market_expert_node)
     g.add_node("report", report_generator_node)
+    g.add_node("critic", critic_node)
 
     g.set_entry_point("perf")
     g.add_edge("perf", "news")
     g.add_edge("news", "report")
-    g.add_edge("report", END)
+    g.add_edge("report", "critic")
+    g.add_edge("critic", END)
 
     return g.compile(checkpointer=MemorySaver())
 
 
 def analyze_stock(ticker: str, thread_id: str = None):
+    # ---------------------------------------------------------
+    # 1. SEMANTIC CACHE CHECK (Qdrant)
+    # ---------------------------------------------------------
+    ticker_upper = ticker.upper()
+    
+    # Initialize Embedding Model
+    # Use the same model hosting as Nodes or default to local Ollama
+    embedder = None
+    if OllamaEmbeddings:
+        try:
+            ollama_url = os.getenv("OLLAMA_BASE_URL", "http://host.docker.internal:11434")
+            embedder = OllamaEmbeddings(
+                model="nomic-embed-text", 
+                base_url=ollama_url
+            )
+        except Exception:
+            pass
+
+    # Initialize Memory
+    if embedder:
+        try:
+            # Relies on QDRANT_HOST env var or defaults to 'qdrant'
+            mem = SemanticCache(collection_name="dataset_cache")
+            
+            # Create query embedding
+            query_text = f"Analysis report for {ticker_upper}"
+            query_vec = embedder.embed_query(query_text)
+            
+            # Search (fetch more to sort by time)
+            hits = mem.recall(query_vec, ticker=ticker_upper, limit=5)
+            
+            # Filter for high score
+            valid_hits = [h for h in hits if h.score > 0.95]
+            
+            if valid_hits:
+                # Sort by created_at_ts descending to get newest
+                valid_hits.sort(key=lambda x: x.payload.get("created_at_ts", 0), reverse=True)
+                best_hit = valid_hits[0]
+                
+                # Cache HIT
+                cached_payload = best_hit.payload
+                # Check if it's for the same ticker to be safe (semantic search might be fuzzy)
+                if cached_payload.get("ticker") == ticker_upper:
+                    print(f"✅ Semantic Cache HIT for {ticker_upper}")
+                    return {
+                        "final_report": cached_payload.get("summary"),
+                        "recommendation": cached_payload.get("recommendation", "Neutral"),
+                        "confidence": cached_payload.get("confidence", "Medium"),
+                        "last_price": cached_payload.get("last_price", 0.0),
+                        "predictions": cached_payload.get("predictions", {})
+                    }
+        except Exception as e:
+            print(f"⚠️ Semantic Cache Error: {e}")
+
+    # ---------------------------------------------------------
+    # 2. FETCH DATA & RUN AGENT
+    # ---------------------------------------------------------
+    
     # FIRST attempt prediction directly
     from src.agents.tools import fetch_prediction_data
-
+    
     # Use the new fetcher
     raw_data = fetch_prediction_data(ticker)
 
@@ -49,7 +117,7 @@ def analyze_stock(ticker: str, thread_id: str = None):
         return {
             "status": "training",
             "detail": f"Model for {ticker} is being trained. Retry after a few seconds.",
-            "ticker": ticker.upper()
+            "ticker": ticker_upper
         }
     
     # Check for error string
@@ -58,12 +126,10 @@ def analyze_stock(ticker: str, thread_id: str = None):
         return {
             "status": "error",
             "detail": raw_data,
-            "ticker": ticker.upper()
+            "ticker": ticker_upper
         }
 
     # Format for Agent (String)
-    # Re-implement the formatting logic briefly or call the tool? 
-    # Calling the tool would re-fetch. Let's format manually to save a call.
     try:
         forecast = (
             raw_data.get("result", {})
@@ -85,7 +151,7 @@ def analyze_stock(ticker: str, thread_id: str = None):
     graph = build_graph()
 
     state = {
-        "ticker": ticker.upper(),
+        "ticker": ticker_upper,
         "messages": [HumanMessage(content=f"Start analysis {ticker}")],
         "predictions": pred_str 
     }
@@ -96,11 +162,41 @@ def analyze_stock(ticker: str, thread_id: str = None):
     result = graph.invoke(state, config=config)
     
     # Inject RAW data for frontend (so it has history)
-    # We put it in the 'predictions' key of the DICT result (not State) or a new key
-    # The result is a dict of the final state.
-    # We can add 'predictions_data' to it.
     if isinstance(raw_data, dict):
-        # Extract the useful part
         result["predictions"] = raw_data.get("result", {}).get("predictions", {})
+
+    # ---------------------------------------------------------
+    # 3. SAVE TO CACHE
+    # ---------------------------------------------------------
+    if embedder and "final_report" in result:
+        try:
+            # Extract metadata
+            rec = result.get("recommendation", "Neutral")
+            conf = result.get("confidence", "Medium")
+            
+            # Extract last_price from predictions dict
+            last_price = 0.0
+            preds_data = result.get("predictions")
+            if isinstance(preds_data, dict):
+                hist = preds_data.get("historical", [])
+                if hist:
+                    last_price = float(hist[-1].get("close", 0))
+                else:
+                    fc = preds_data.get("full_forecast", [])
+                    if fc:
+                        last_price = float(fc[0].get("close", 0))
+
+            mem.save_episode(
+                ticker=ticker_upper,
+                summary=result["final_report"],
+                embedding=query_vec, # Reuse the query vector as the key
+                recommendation=rec,
+                confidence=conf,
+                last_price=last_price,
+                predictions=preds_data if isinstance(preds_data, dict) else {}
+            )
+            print(f"✅ Saved to Qdrant: {ticker_upper}")
+        except Exception as e:
+            print(f"⚠️ Failed to save cache: {e}")
     
     return result

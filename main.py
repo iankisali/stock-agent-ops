@@ -328,8 +328,8 @@ def reset_system():
         # 2. Wipe Qdrant
         # We need to instantiate client here or reuse if available
         # Simple approach: use the helper class
-        from src.memory.episodic import EpisodicMemory
-        mem = EpisodicMemory(host="qdrant", port=6333)
+        from src.memory.semantic_cache import SemanticCache
+        mem = SemanticCache(host="qdrant", port=6333)
         mem.client.delete_collection(mem.collection_name)
         mem._ensure_collection() # Recreate empty
         logger.info("✅ Qdrant wiped")

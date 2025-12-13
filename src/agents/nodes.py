@@ -108,3 +108,42 @@ End with: **Market Stance:** BULLISH/BEARISH/NEUTRAL | **Confidence:** High/Medi
         "recommendation": stance,
         "confidence": confidence
     }
+
+
+# --------------------------------------------------------------------------
+# CRITIC NODE
+# --------------------------------------------------------------------------
+def critic_node(state: dict) -> dict:
+    """
+    Criticizes and refines the report. 
+    It checks for consistency between predictions and recommendation.
+    """
+    current_report = state.get("final_report", "")
+    predictions = state.get("predictions", "")
+    
+    prompt = f"""
+    You are a Senior Editor. critique and refine this financial report.
+    
+    DATA:
+    {predictions}
+    
+    DRAFT REPORT:
+    {current_report}
+    
+    Your Job:
+    1. Verify if the 'Market Stance' aligns with the data.
+    2. Ensure the tone is professional (Bloomberg style).
+    3. If everything is good, just output the Original Report.
+    4. If there are issues, rewrite it to be better.
+    
+    Output ONLY the Final Report (whether original or improved).
+    """
+    
+    resp = llm.invoke([SystemMessage(content=prompt)])
+    final_text = resp.content if hasattr(resp, "content") else str(resp)
+
+    # We treat the critic's output as the definitive 'final_report'
+    return {
+        "messages": [resp],
+        "final_report": final_text
+    }
