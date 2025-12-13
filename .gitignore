@@ -10,7 +10,8 @@ wheels/
 .venv
 
 # .ENV
-.env
+.env/
+*.env
 
 # MLflow
 mlruns/
