@@ -10,7 +10,7 @@ from langchain_core.messages import SystemMessage, AIMessage
 from src.agents.tools import get_stock_predictions, get_stock_news, TOOLS_LIST
 
 
-# LLM setup (Ollama or Mock fallback)
+# LLM setup (Ollama)
 try:
     from langchain_ollama import ChatOllama
 
@@ -20,10 +20,11 @@ try:
         base_url="http://host.docker.internal:11434"
     ).bind_tools(TOOLS_LIST)
 
-except Exception:
+except Exception as e:
+    print(f"⚠️ LLM Init Error: {e}")
     class Mock:
         def invoke(self, *args, **kwargs):
-            return AIMessage(content="Mock response: LLM unavailable.")
+            return AIMessage(content=f"Mock response: LLM unavailable. Error: {e}")
     llm = Mock()
 
 

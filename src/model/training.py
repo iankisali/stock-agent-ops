@@ -10,7 +10,7 @@ logger = get_logger()
 def fit_model(model: nn.Module, train_loader: DataLoader, val_loader: DataLoader, epochs: int = 8, lr: float = 1e-3) -> nn.Module:
     """Train the LSTM model with early stopping (Model Training Stage)."""
     model.to(Config().device)
-    opt = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
+    opt = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-6)
     criterion = nn.MSELoss()
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(opt, mode='min', factor=0.5, patience=3)
     best_val_loss = float('inf')

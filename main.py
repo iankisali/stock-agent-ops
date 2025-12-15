@@ -53,6 +53,7 @@ SYSTEM_CPU = Gauge("system_cpu_percent", "CPU percent", registry=registry)
 SYSTEM_RAM = Gauge("system_ram_used_mb", "RAM MB", registry=registry)
 REDIS_STATUS = Gauge("redis_up", "Redis up=1/down=0", registry=registry)
 TRAINING_STATUS = Gauge("training_status", "0=idle 1=running 2=completed", ["task_id"], registry=registry)
+TRAINING_MSE = Gauge("training_mse_last", "Last training MSE", registry=registry)
 PREDICTION_COUNTER = Counter("prediction_total", "Total predictions", ["type"], registry=registry)
 CACHE_HIT = Counter("redis_cache_hit_total", "Cache hits", ["key"], registry=registry)
 CACHE_MISS = Counter("redis_cache_miss_total", "Cache misses", ["key"], registry=registry)
@@ -96,6 +97,10 @@ async def run_training_worker(task_id: str, fn, *args):
         save_task_status(task_id, status_data, ttl=3600) # Keep completed status for 1 hour
         
         TRAINING_STATUS.labels(task_id).set(2)
+        
+        # Update metrics if MSE is available in result
+        if isinstance(result, dict) and "mse" in result:
+             TRAINING_MSE.set(result["mse"])
     except Exception as e:
         status_data = {"status": "failed", "error": str(e), "failed_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
         save_task_status(task_id, status_data, ttl=3600)
@@ -248,6 +253,7 @@ def get_or_set_cache(key: str, compute_fn, expire: int = 86400):
 @rate_limit(limit=40, window_sec=3600, key_prefix="predict_parent")
 async def predict_parent_endpoint():
     """Get parent model predictions."""
+    PREDICTION_COUNTER.labels(type="parent").inc()
     try:
         return {"result": await run_blocking_fn(predict_parent)}
     except Exception as e:
@@ -263,6 +269,7 @@ async def predict_child_endpoint(request: Request, response: Response):
         raise HTTPException(400, "ticker is required")
         
     task_id = ticker.lower()
+    PREDICTION_COUNTER.labels(type="child").inc()
 
     try:
         # Cache layer for raw predictions

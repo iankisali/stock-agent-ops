@@ -18,6 +18,9 @@ class Config:
     transfer_strategy: str = "freeze"  # Options: "freeze", "fine_tune"
     fine_tune_lr: float = 1e-4
     parent_dir: str = "outputs/parent"
+    fine_tune_lr: float = 1e-4
+    parent_dir: str = "outputs/parent"
+    workdir: str = "outputs"
     workdir: str = "outputs"
 
     @property

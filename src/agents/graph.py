@@ -54,7 +54,6 @@ def analyze_stock(ticker: str, thread_id: str = None):
     ticker_upper = ticker.upper()
     
     # Initialize Embedding Model
-    # Use the same model hosting as Nodes or default to local Ollama
     embedder = None
     if OllamaEmbeddings:
         try:
