@@ -47,7 +47,14 @@ curl -X DELETE http://localhost:8000/system/reset
 
 - Cache
 ```bash
-curl "http://localhost:8000/system/cache"
+curl -X GET http://localhost:8000/system/cache
 
-curl "http://localhost:8000/system/cache?ticker=AAPL"
+curl -X GET http://localhost:8000/system/cache?ticker=AAPL
 ```
+# Monitoring Endpoint
+curl -X POST http://localhost:8000/monitor/parent
+
+# Monitoring Dashboard
+Access the dedicated monitoring dashboard (Data Drift & Agent Eval) at:
+[http://localhost:8502](http://localhost:8502)
+

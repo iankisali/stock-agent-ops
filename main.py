@@ -27,6 +27,10 @@ from src.exception import PipelineError
 # Agent Imports
 from src.agents.graph import analyze_stock
 
+# Monitoring Imports
+from src.monitoring.drift import check_drift
+from src.monitoring.agent_eval import AgentEvaluator
+
 # =========================================================
 # SETUP
 # =========================================================
@@ -51,10 +55,14 @@ executor = ThreadPoolExecutor(max_workers=4)
 registry = CollectorRegistry()
 SYSTEM_CPU = Gauge("system_cpu_percent", "CPU percent", registry=registry)
 SYSTEM_RAM = Gauge("system_ram_used_mb", "RAM MB", registry=registry)
+SYSTEM_DISK = Gauge("system_disk_used_mb", "Disk Used MB", registry=registry)
 REDIS_STATUS = Gauge("redis_up", "Redis up=1/down=0", registry=registry)
+REDIS_KEYS = Gauge("redis_keys_total", "Number of keys in Redis", registry=registry)
 TRAINING_STATUS = Gauge("training_status", "0=idle 1=running 2=completed", ["task_id"], registry=registry)
 TRAINING_MSE = Gauge("training_mse_last", "Last training MSE", registry=registry)
+TRAINING_DURATION = Histogram("training_duration_seconds", "Training duration in seconds", ["task_id"], registry=registry)
 PREDICTION_COUNTER = Counter("prediction_total", "Total predictions", ["type"], registry=registry)
+PREDICTION_LATENCY = Histogram("prediction_latency_seconds", "Prediction latency", ["type"], registry=registry)
 CACHE_HIT = Counter("redis_cache_hit_total", "Cache hits", ["key"], registry=registry)
 CACHE_MISS = Counter("redis_cache_miss_total", "Cache misses", ["key"], registry=registry)
 
@@ -63,6 +71,12 @@ Instrumentator(registry=registry).instrument(app)
 def refresh_system_metrics():
     SYSTEM_CPU.set(psutil.cpu_percent())
     SYSTEM_RAM.set(psutil.virtual_memory().used / (1024**2))
+    SYSTEM_DISK.set(psutil.disk_usage('/').used / (1024**2))
+    if redis_client:
+        try:
+            REDIS_KEYS.set(redis_client.dbsize())
+        except:
+            pass
 
 # Task Status Tracking (Redis)
 def get_task_key(task_id: str) -> str:
@@ -90,8 +104,11 @@ def get_task_status_redis(task_id: str) -> Optional[Dict[str, Any]]:
 async def run_training_worker(task_id: str, fn, *args):
     """Actual training worker (runs in thread pool)."""
     loop = asyncio.get_event_loop()
+    start_time = time.time()
     try:
         result = await loop.run_in_executor(executor, fn, *args)
+        duration = time.time() - start_time
+        TRAINING_DURATION.labels(task_id).observe(duration)
         
         status_data = {"status": "completed", "result": result, "completed_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
         save_task_status(task_id, status_data, ttl=3600) # Keep completed status for 1 hour
@@ -254,8 +271,11 @@ def get_or_set_cache(key: str, compute_fn, expire: int = 86400):
 async def predict_parent_endpoint():
     """Get parent model predictions."""
     PREDICTION_COUNTER.labels(type="parent").inc()
+    start_time = time.time()
     try:
-        return {"result": await run_blocking_fn(predict_parent)}
+        result = await run_blocking_fn(predict_parent)
+        PREDICTION_LATENCY.labels(type="parent").observe(time.time() - start_time)
+        return {"result": result}
     except Exception as e:
         raise HTTPException(500, str(e))
 
@@ -271,12 +291,14 @@ async def predict_child_endpoint(request: Request, response: Response):
     task_id = ticker.lower()
     PREDICTION_COUNTER.labels(type="child").inc()
 
+    start_time = time.time()
     try:
         # Cache layer for raw predictions
         def get_preds():
             return get_or_set_cache(f"predict_child_{ticker.lower()}", lambda: predict_child(ticker), expire=1800)
             
         preds, _ = await run_blocking_fn(get_preds)
+        PREDICTION_LATENCY.labels(type="child").observe(time.time() - start_time)
         return {"result": preds}
     except (FileNotFoundError, PipelineError) as e:
         # Specific handling for missing models -> Auto-train
@@ -320,8 +342,130 @@ async def get_task_status(task_id: str):
     
     # Remove start_time for cleaner output
     response.pop("start_time", None)
-            
     return response
+@app.get("/system/logs")
+async def get_logs(lines: int = 100):
+    """Retrieve the latest log lines."""
+    log_dir = "logs"
+    if not os.path.exists(log_dir):
+        return {"logs": "Log directory not found."}
+    
+    # Get latest log file
+    files = [f for f in os.listdir(log_dir) if f.endswith(".log")]
+    if not files:
+        return {"logs": "No log files found."}
+    
+    latest_file = sorted(files)[-1]
+    path = os.path.join(log_dir, latest_file)
+    
+    try:
+        with open(path, "r") as f:
+            # Read last N lines
+            content = f.readlines()
+            last_lines = content[-lines:]
+            return {"logs": "".join(last_lines), "filename": latest_file}
+    except Exception as e:
+        return {"error": f"Failed to read logs: {e}"}
+
+@app.post("/monitor/parent")
+async def monitor_parent():
+    """
+    Monitor ONLY the Parent Model (^GSPC).
+    Triggers Drift & wrapper evaluation for the market index.
+    """
+    from src.config import Config
+    cfg = Config()
+    ticker = cfg.parent_ticker # ^GSPC
+    
+    # Run Drift
+    try:
+        drift_res = check_drift(ticker, BASE_PATH)
+    except Exception as e:
+        drift_res = {"status": "failed", "error": str(e)}
+
+    # Run Agent Eval (Market Analysis Agent)
+    try:
+        evaluator = AgentEvaluator(BASE_PATH)
+        eval_res = evaluator.evaluate_live(ticker)
+    except Exception as e:
+        eval_res = {"status": "failed", "error": str(e)}
+
+    return {
+        "ticker": ticker,
+        "type": "Parent Model (Market Index)",
+        "drift": drift_res,
+        "agent_eval": eval_res,
+        "links": {
+            "get_drift_json": f"/monitor/{ticker}/drift",
+            "get_eval_json": f"/monitor/{ticker}/eval"
+        }
+    }
+
+@app.post("/monitor/{ticker}")
+async def trigger_monitoring(ticker: str):
+    """
+    Trigger live monitoring for a ticker.
+    Drift is ONLY calculated if ticker is the parent ticker.
+    """
+    from src.config import Config
+    cfg = Config()
+    clean_ticker = ticker.strip().upper()
+    is_parent = (clean_ticker == cfg.parent_ticker)
+    
+    # Run Drift ONLY for parent
+    drift_res = {"status": "skipped", "detail": "Drift calculation reserved for parent model."}
+    if is_parent:
+        try:
+            drift_res = check_drift(clean_ticker, BASE_PATH)
+        except Exception as e:
+            drift_res = {"status": "failed", "error": str(e)}
+        
+    # Run Agent Eval (Always)
+    try:
+        evaluator = AgentEvaluator(BASE_PATH)
+        eval_res = evaluator.evaluate_live(clean_ticker)
+    except Exception as e:
+        eval_res = {"status": "failed", "error": str(e)}
+            
+    return {
+        "ticker": clean_ticker,
+        "is_parent": is_parent,
+        "drift": drift_res,
+        "agent_eval": eval_res
+    }
+
+@app.get("/monitor/{ticker}/drift")
+def get_drift_result(ticker: str):
+    """Get the latest drift result JSON (if we save it, otherwise HTML path)."""
+    # Currently drift.py only saves HTML. We can return the path or status.
+    # Ideally should save JSON too.
+    # For now, rerun check or checking file existence? 
+    # Let's just return file info.
+    t = ticker.lower()
+    drift_dir = os.path.join(BASE_PATH, t, "drift")
+    
+    if not os.path.exists(drift_dir):
+        raise HTTPException(404, "No drift report found")
+    
+    json_path = os.path.join(drift_dir, "latest_drift.json")
+    if os.path.exists(json_path):
+        with open(json_path, "r") as f:
+            return json.load(f)
+            
+    files = os.listdir(drift_dir)
+    return {"files": files, "message": "Access HTML report in outputs/", "detail": "JSON summary missing."}
+
+@app.get("/monitor/{ticker}/eval")
+def get_eval_result(ticker: str):
+    """Get the latest agent eval result JSON."""
+    t = ticker.lower()
+    path = os.path.join(BASE_PATH, t, "agent_eval", "latest_eval.json")
+    
+    if not os.path.exists(path):
+        raise HTTPException(404, "No evaluation found. Run POST /monitor/{ticker} first.")
+    
+    with open(path, "r") as f:
+        return json.load(f)
 
 @app.delete("/system/reset")
 def reset_system():
@@ -353,7 +497,14 @@ def reset_system():
                  os.remove(p)
                  logger.info(f"✅ Deleted Feast file: {p}")
 
-        return {"status": "System Reset Complete", "details": "Redis flushed, Qdrant emptied, Feast registry/data wiped."}
+        # 4. Wipe Outputs Directory
+        import shutil
+        if os.path.exists(BASE_PATH):
+            shutil.rmtree(BASE_PATH)
+            os.makedirs(BASE_PATH)
+            logger.info(f"✅ Wiped and recreated outputs directory: {BASE_PATH}")
+
+        return {"status": "System Reset Complete", "details": "Redis flushed, Qdrant emptied, Feast registry/data wiped, Outputs directory cleared."}
     except Exception as e:
         logger.error(f"Reset failed: {e}")
         raise HTTPException(500, f"Reset failed: {e}")

@@ -92,6 +92,23 @@ services:
       - app_network
     environment:
       - API_URL=http://fastapi:8000
+
+  monitoring_dashboard:
+    build:
+      context: ./monitoring_app
+      dockerfile: Dockerfile
+    container_name: monitoring_dashboard
+    ports:
+      - "8502:8502"
+    depends_on:
+      - fastapi
+    networks:
+      - app_network
+    volumes:
+      - ./outputs:/app/outputs
+    environment:
+      - API_URL=http://fastapi:8000
+
 volumes:
   redis_data:
   qdrant_data:
