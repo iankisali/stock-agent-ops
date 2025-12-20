@@ -1,3 +1,7 @@
+# Git
+.git
+.gitignore
+
 # Python-generated files
 __pycache__/
 *.py[oc]
@@ -8,16 +12,18 @@ wheels/
 
 # Virtual environments
 .venv
+env/
+venv/
 
-# MLflow
+# MLflow / Tracking
 mlruns/
 mlflow.db
 mlartifacts/
 
-# Logs
-logs
+# Logs and outputs
+logs/
+outputs/
+feature_repo/data/
 
-# No data 
-data/
-*.db 
-plugins/
+# OS files
+.DS_Store

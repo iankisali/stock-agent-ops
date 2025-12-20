@@ -158,20 +158,25 @@ class AnalyzeRequest(BaseModel):
 # Startup
 # =========================================================
 @app.on_event("startup")
-def startup():
+async def startup():
     global redis_client
-    try:
-        initialize_dirs()
-        redis_client = redis.Redis(host="redis", port=6379, db=0)
-        redis_client.ping()
-        REDIS_STATUS.set(1)
-        
-        # Initialize Agent Cache
-        # cache_module.cache_instance = RedisSemanticCache(host="redis", port=6379)
-        logger.info("✅ Systems online (Redis, MLflow, Agents)")
-    except Exception as e:
-        REDIS_STATUS.set(0)
-        logger.error(f"Startup failure: {e}")
+    initialize_dirs()
+    
+    # Retry logic for Redis connection
+    for i in range(10):
+        try:
+            redis_client = redis.Redis(host="redis", port=6379, db=0)
+            redis_client.ping()
+            REDIS_STATUS.set(1)
+            logger.info("✅ Systems online (Redis, MLflow, Agents)")
+            return
+        except Exception as e:
+            logger.warning(f"⏳ Waiting for Redis... attempt {i+1}/10")
+            await asyncio.sleep(5)
+            
+    REDIS_STATUS.set(0)
+    logger.error("❌ Failed to connect to Redis after multiple attempts.")
+
 
 # =========================================================
 # Core Routes

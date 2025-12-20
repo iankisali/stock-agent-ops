@@ -1,110 +1,296 @@
 {
   "id": null,
   "uid": "mlops-fastapi-dashboard",
-  "title": "MLOps FastAPI Monitoring Dashboard",
+  "title": "MLOps Stock Prediction Overview",
   "timezone": "browser",
   "schemaVersion": 39,
-  "version": 2,
+  "version": 3,
   "refresh": "5s",
   "panels": [
     {
-      "type": "stat",
-      "title": "Redis Status",
-      "gridPos": { "x": 0, "y": 0, "w": 4, "h": 3 },
+      "type": "row",
+      "title": "Infrastructure Health",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 1
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "gauge",
+      "title": "CPU Usage",
+      "gridPos": {
+        "x": 0,
+        "y": 1,
+        "w": 6,
+        "h": 4
+      },
       "targets": [
-        { "expr": "redis_up", "refId": "A" }
+        {
+          "expr": "system_cpu_percent",
+          "refId": "A"
+        }
       ],
-      "colorMode": "background",
-      "options": { "reduceOptions": { "calcs": ["last"] } }
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "max": 100,
+          "unit": "percent",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "#EAB839",
+                "value": 60
+              },
+              {
+                "color": "red",
+                "value": 85
+              }
+            ]
+          }
+        }
+      }
     },
     {
       "type": "stat",
-      "title": "CPU Usage (%)",
-      "gridPos": { "x": 4, "y": 0, "w": 4, "h": 3 },
+      "title": "RAM Used",
+      "gridPos": {
+        "x": 6,
+        "y": 1,
+        "w": 6,
+        "h": 4
+      },
       "targets": [
-        { "expr": "system_cpu_percent", "refId": "A" }
+        {
+          "expr": "system_ram_used_mb",
+          "refId": "A"
+        }
       ],
-      "options": { "reduceOptions": { "calcs": ["last"] } }
+      "fieldConfig": {
+        "defaults": {
+          "unit": "decbytes",
+          "color": {
+            "mode": "fixed"
+          }
+        }
+      }
     },
     {
       "type": "stat",
-      "title": "RAM Used (MB)",
-      "gridPos": { "x": 8, "y": 0, "w": 4, "h": 3 },
+      "title": "Disk Used",
+      "gridPos": {
+        "x": 12,
+        "y": 1,
+        "w": 6,
+        "h": 4
+      },
       "targets": [
-        { "expr": "system_ram_used_mb", "refId": "A" }
-      ]
-    },
-    {
-      "type": "stat",
-      "title": "Disk Used (MB)",
-      "gridPos": { "x": 12, "y": 0, "w": 4, "h": 3 },
-      "targets": [
-        { "expr": "system_disk_used_mb", "refId": "A" }
-      ]
-    },
-    {
-      "type": "bargauge",
-      "title": "Cache Hits (per key)",
-      "gridPos": { "x": 0, "y": 3, "w": 6, "h": 4 },
-      "targets": [
-        { "expr": "sum by (key) (redis_cache_hit_total)", "refId": "A" }
-      ]
-    },
-    {
-      "type": "bargauge",
-      "title": "Cache Misses (per key)",
-      "gridPos": { "x": 6, "y": 3, "w": 6, "h": 4 },
-      "targets": [
-        { "expr": "sum by (key) (redis_cache_miss_total)", "refId": "A" }
-      ]
-    },
-    {
-      "type": "stat",
-      "title": "Training Status",
-      "gridPos": { "x": 12, "y": 3, "w": 6, "h": 4 },
-      "targets": [
-        { "expr": "training_status", "legendFormat": "{{task}}", "refId": "A" }
-      ]
+        {
+          "expr": "system_disk_used_mb",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "decbytes",
+          "color": {
+            "mode": "fixed"
+          }
+        }
+      }
     },
     {
       "type": "timeseries",
-      "title": "Prediction Count",
-      "gridPos": { "x": 0, "y": 7, "w": 12, "h": 5 },
+      "title": "API Request Rate (RPS)",
+      "gridPos": {
+        "x": 18,
+        "y": 1,
+        "w": 6,
+        "h": 4
+      },
       "targets": [
-        { "expr": "increase(prediction_total{type=\"parent\"}[5m])", "legendFormat": "Parent", "refId": "A" },
-        { "expr": "increase(prediction_total{type=\"child\"}[5m])", "legendFormat": "Child", "refId": "B" }
-      ]
+        {
+          "expr": "sum(rate(http_requests_total[1m]))",
+          "refId": "A",
+          "legendFormat": "Total Requests"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        }
+      }
+    },
+    {
+      "type": "row",
+      "title": "Model Training Performance",
+      "gridPos": {
+        "x": 0,
+        "y": 5,
+        "w": 24,
+        "h": 1
+      },
+      "collapsed": false,
+      "panels": []
     },
     {
       "type": "timeseries",
       "title": "Training Duration (Seconds)",
-      "gridPos": { "x": 12, "y": 7, "w": 12, "h": 5 },
+      "gridPos": {
+        "x": 0,
+        "y": 6,
+        "w": 12,
+        "h": 6
+      },
       "targets": [
-        { "expr": "training_duration_seconds_sum", "legendFormat": "{{task}}", "refId": "A" }
-      ]
-    },
-    {
-      "type": "heatmap",
-      "title": "Prediction Latency Heatmap (Parent)",
-      "gridPos": { "x": 0, "y": 12, "w": 12, "h": 8 },
-      "targets": [
-        { "expr": "rate(prediction_latency_seconds_bucket{type=\"parent\"}[5m])", "refId": "A" }
-      ]
-    },
-    {
-      "type": "heatmap",
-      "title": "Prediction Latency Heatmap (Child)",
-      "gridPos": { "x": 12, "y": 12, "w": 12, "h": 8 },
-      "targets": [
-        { "expr": "rate(prediction_latency_seconds_bucket{type=\"child\"}[5m])", "refId": "A" }
+        {
+          "expr": "training_duration_seconds_sum",
+          "legendFormat": "{{task}}",
+          "refId": "A"
+        }
       ]
     },
     {
       "type": "timeseries",
-      "title": "API Request Rate",
-      "gridPos": { "x": 0, "y": 20, "w": 24, "h": 5 },
+      "title": "API Traffic by Route",
+      "gridPos": {
+        "x": 12,
+        "y": 6,
+        "w": 6,
+        "h": 6
+      },
       "targets": [
-        { "expr": "sum(rate(http_requests_total[1m]))", "refId": "A" }
+        {
+          "expr": "sum by (handler) (rate(http_requests_total[5m]))",
+          "legendFormat": "{{handler}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 10
+          }
+        }
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Redis Records",
+      "gridPos": {
+        "x": 18,
+        "y": 6,
+        "w": 6,
+        "h": 6
+      },
+      "targets": [
+        {
+          "expr": "redis_keys_total",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "fixed"
+          }
+        }
+      }
+    },
+    {
+      "type": "row",
+      "title": "Business Metrics: Model Usage",
+      "gridPos": {
+        "x": 0,
+        "y": 12,
+        "w": 24,
+        "h": 1
+      },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "stat",
+      "title": "Total Predictions Served",
+      "gridPos": {
+        "x": 0,
+        "y": 13,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "sum(prediction_total)",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "last"
+          ]
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Prediction Traffic Source",
+      "gridPos": {
+        "x": 6,
+        "y": 13,
+        "w": 18,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "increase(prediction_total{type=\"parent\"}[5m])",
+          "legendFormat": "Generic Market Model (^GSPC)",
+          "refId": "A"
+        },
+        {
+          "expr": "increase(prediction_total{type=\"child\"}[5m])",
+          "legendFormat": "Specific Stock (Transfer Learning)",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Service Latency Overview",
+      "gridPos": {
+        "x": 0,
+        "y": 21,
+        "w": 24,
+        "h": 1
+      },
+      "collapsed": true,
+      "panels": []
+    },
+    {
+      "type": "heatmap",
+      "title": "Prediction Latency",
+      "gridPos": {
+        "x": 0,
+        "y": 22,
+        "w": 24,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "rate(prediction_latency_seconds_bucket[5m])",
+          "refId": "A"
+        }
       ]
     }
   ]

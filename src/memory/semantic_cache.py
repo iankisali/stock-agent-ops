@@ -31,7 +31,12 @@ class SemanticCache:
         ttl_hours: int = 24,
     ):
         self.host = host or os.getenv("QDRANT_HOST", "qdrant")
-        self.port = port or int(os.getenv("QDRANT_PORT", 6333))
+        env_port = os.getenv("QDRANT_PORT", "6333")
+        if env_port.isdigit():
+            self.port = port or int(env_port)
+        else:
+            self.port = port or 6333 # Fallback if K8s injects a URI
+
         self.collection_name = collection_name
         self.vector_size = vector_size
         self.ttl_seconds = ttl_hours * 3600
