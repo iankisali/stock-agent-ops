@@ -42,42 +42,46 @@ The system is designed as a modular, scalable MLOps platform for stock market pr
 ## 3. Detailed Workflow Diagram
 
 ```mermaid
-graph TD
-    User((User)) -->|Requests Analysis| UI[Streamlit Frontend]
-    UI -->|POST /analyze| API[FastAPI Backend]
-    
-    subgraph "Data & Feature Layer"
-        API -->|Fetch Data| YF[Yahoo Finance API]
-        YF -->|Raw Data| Feast[Feast Feature Store]
-        Feast -->|Materialized Features| S3[Offline Store/Parquet]
+graph LR
+    %% User Interaction
+    User((User)) -->|1. Requests| UI[Streamlit UI]
+    UI -->|2. API Calls| API[FastAPI Orchestrator]
+    API -->|8. Report| UI
+
+    subgraph Data_Flow [Data & Features]
+        API --> YF[Yahoo Finance]
+        YF --> FST[Feast Feature Store]
+        FST --> PAR[Parquet Files]
     end
 
-    subgraph "Model Lifecycle"
-        API -->|Trigger Train| TrainPipe[Training Pipeline]
-        TrainPipe -->|Load Base Weights| Parent[Parent Model ^GSPC]
-        Parent -->|Transfer Learning| Child[Child Model Ticker-Specific]
-        Child -->|Log Metrics/Artifacts| MLflow[MLflow / DagsHub]
+    subgraph Training_Phase [Training Pipeline]
+        API --> TRN[Training Worker]
+        TRN --> TL[Transfer Learning]
+        TL --- P_MDL[^GSPC Parent]
+        TL --- C_MDL[Ticker Child]
+        TRN --> MLF[MLflow Registry]
     end
 
-    subgraph "Inference & Agentic Analysis"
-        API -->|Fetch Prediction| InfPipe[Inference Pipeline]
-        InfPipe -->|Check Cache| Redis[(Redis Cache)]
-        InfPipe -->|Run LSTM| Child
+    subgraph Serving_Phase [Inference & Agents]
+        API --> INF[Inference Engine]
+        INF --> RED[(Redis Cache)]
+        INF --> C_MDL
         
-        API -->|Analyze| Agent[LangGraph Multi-Agent System]
-        Agent -->|Query Memory| Qdrant[(Qdrant Vector DB)]
-        Agent -->|Tools| News[YFinance/DuckDuckGo Search]
-        Agent -->|Output| Report[Final Analysis Report]
+        API --> AGT[LangGraph Agents]
+        AGT --> QDR[(Qdrant Vector DB)]
+        AGT --> TA[Tools: News/Search]
     end
 
-    subgraph "Observability"
-        API -->|Metrics| Prom[Prometheus]
-        Prom -->|Dashboards| Graf[Grafana]
-        API -->|Check Drift| Drift[Drift Detection]
-        API -->|Evaluate| AgentEval[Agent Evaluator]
+    subgraph Monitoring_Phase [Observability]
+        API --- PROM[Prometheus]
+        PROM --- GRAF[Grafana]
+        API --- EVT[Evidently Drift]
+        API --- AE[Agent Eval]
     end
-    
-    Report --> UI
+
+    %% Key Connections
+    C_MDL -.->|Served By| INF
+    AGT -.->|Interprets| INF
 ```
 
 ---
