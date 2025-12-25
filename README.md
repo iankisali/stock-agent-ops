@@ -80,18 +80,25 @@ graph TB
 ### 1. Prerequisites
 - [Docker & Docker Compose](https://docs.docker.com/get-docker/)
 - [Ollama](https://ollama.com/) (Running on host machine)
+- [FINHUB[(https://finnhub.io/) (Get FinnHub API key)
+
+#### Install Ollama Models
+1. LLM: GPT-oss:20b Cloud - `gpt-oss:20b-cloud`
+2. EMBEDDINGS: nomic-embed-text - `ollama pull nomic-embed-text`
 
 ### 2. Configure Environment
 Create a `.env` file in the root:
 ```bash
 # DagsHub Tracking
-DAGSHUB_USER_NAME=your_user
-DAGSHUB_REPO_NAME=your_repo
-DAGSHUB_TOKEN=your_token
-MLFLOW_TRACKING_URI=...
-
-# Ollama Endpoint
-OLLAMA_BASE_URL=http://host.docker.internal:11434
+# DagsHub Configuration for Remote MLflow Tracking
+DAGSHUB_USER_NAME=
+DAGSHUB_REPO_NAME=
+DAGSHUB_TOKEN=
+MLFLOW_TRACKING_URI=
+REDIS_HOST=localhost
+REDIS_PORT=6379
+GOOGLE_API_KEY=
+FMI_API_KEY=
 ```
 
 ### 3. Spin up the Stack
@@ -113,7 +120,6 @@ docker-compose up --build -d
 ### 4. Access the Applications
 - **Streamlit UI**: `http://localhost:8501`
 - **Monitoring App**: `http://localhost:8502`
-- **API Docs**: `http://localhost:8000/docs`
 - **Grafana**: `http://localhost:3000` (admin/admin)
 
 ---
