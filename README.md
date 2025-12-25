@@ -91,7 +91,7 @@ graph TB
 | **Cache** | Redis Stack |
 | **Backend** | FastAPI (Async) |
 | **Frontend** | Streamlit |
-| **Observability**| Prometheus, Grafana, Evidently AI |
+| **Observability**| Prometheus, Grafana |
 
 ---
 
