@@ -1,7 +1,7 @@
 # 📈 MLOps Pipeline: End-to-End Weekly Stock Report Generation
 
 [![GitHub license](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/kmeanskaran/mlops-pipeline/blob/main/LICENSE)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.11+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![Docker Compose](https://img.shields.io/badge/docker-compose-red.svg)](https://docs.docker.com/compose/)
 [![Feast](https://img.shields.io/badge/feature_store-Feast-orange.svg)](https://feast.dev/)
 [![MLflow](https://img.shields.io/badge/tracking-MLflow-blue.svg)](https://mlflow.org/)
@@ -80,7 +80,8 @@ graph TB
 ### 1. Prerequisites
 - [Docker & Docker Compose](https://docs.docker.com/get-docker/)
 - [Ollama](https://ollama.com/) (Running on host machine)
-- [FINHUB[(https://finnhub.io/) (Get FinnHub API key)
+- [FINHUB](https://finnhub.io/) (Get FinnHub API key)
+- [UV](https://docs.astral.sh/uv/guides/install-python/) (UV package manager for Python
 
 #### Install Ollama Models
 1. LLM: GPT-oss:20b Cloud - `gpt-oss:20b-cloud`
@@ -152,8 +153,8 @@ The system employs 4 specialized agents coordinated by **LangGraph**:
 
 If you find this project helpful, let's connect!
 
-<a href="https://x.com/@kmeasnskaran" target="_blank">
-    <img src="https://img.shields.io/badge/X-000000?style=for-the-badge&logo=x&logoColor=white" alt="X"/>
+<a href="https://x.com/kmeasnskaran" target="_blank">
+    <img src="https://cdn.simpleicons.org/x/white" alt="X logo" width="28" height="28" style="margin-right: 12px;">
 </a>
 <a href="https://linkedin.com/in/kmeanskaran" target="_blank">
     <img src="https://img.shields.io/badge/LinkedIn-0077B5?style=for-the-badge&logo=linkedin&logoColor=white" alt="LinkedIn"/>
