@@ -13,7 +13,7 @@ If you have already performed the initial setup, use this 3-step loop:
     ```bash
     eval $(minikube docker-env)
     # Re-build only the component you changed (e.g., FastAPI)
-    docker build -t mlops-pipeline-fastapi:latest .
+    docker build -t stock-agent-ops-fastapi:latest .
     ```
 3.  **Deploy & Tunnel**: 
     ```bash
@@ -48,13 +48,13 @@ Build the core components. We use the `latest` tag for simplicity, but in produc
 
 ```bash
 # Build Backend (FastAPI)
-docker build -t mlops-pipeline-fastapi:latest .
+docker build -t stock-agent-ops-fastapi:latest .
 
 # Build Frontend (Streamlit)
-docker build -t mlops-pipeline-frontend:latest -f frontend/Dockerfile frontend/
+docker build -t stock-agent-ops-frontend:latest -f frontend/Dockerfile frontend/
 
 # Build Monitoring App (Streamlit)
-docker build -t mlops-pipeline-monitoring:latest -f monitoring_app/Dockerfile monitoring_app/
+docker build -t stock-agent-ops-monitoring:latest -f monitoring_app/Dockerfile monitoring_app/
 ```
 
 ---

@@ -14,7 +14,7 @@ spec:
     spec:
       containers:
       - name: fastapi
-        image: mlops-pipeline-fastapi:latest
+        image: stock-agent-ops-fastapi:latest
         imagePullPolicy: Never
         ports:
         - containerPort: 8000

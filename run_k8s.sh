@@ -10,16 +10,16 @@ minikube start --driver=docker --cpus $CPUS --memory $MEMORY --disk-size $DISK
 
 echo "📦 Building Docker Images (on HOST for speed)..."
 # Build Backend
-docker build -t mlops-pipeline-fastapi:latest -f backend/Dockerfile .
+docker build -t stock-agent-ops-fastapi:latest -f backend/Dockerfile .
 # Build Frontend
-docker build -t mlops-pipeline-frontend:latest -f frontend/Dockerfile frontend/
+docker build -t stock-agent-ops-frontend:latest -f frontend/Dockerfile frontend/
 # Build Monitoring
-docker build -t mlops-pipeline-monitoring:latest -f monitoring_app/Dockerfile monitoring_app/
+docker build -t stock-agent-ops-monitoring:latest -f monitoring_app/Dockerfile monitoring_app/
 
 echo "📥 Loading images into Minikube..."
-minikube image load mlops-pipeline-fastapi:latest
-minikube image load mlops-pipeline-frontend:latest
-minikube image load mlops-pipeline-monitoring:latest
+minikube image load stock-agent-ops-fastapi:latest
+minikube image load stock-agent-ops-frontend:latest
+minikube image load stock-agent-ops-monitoring:latest
 
 echo "🚢 Deploying to Kubernetes..."
 kubectl apply -f k8s/

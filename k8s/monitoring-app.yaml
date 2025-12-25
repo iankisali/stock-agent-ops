@@ -14,7 +14,7 @@ spec:
     spec:
       containers:
       - name: monitoring-app
-        image: mlops-pipeline-monitoring:latest
+        image: stock-agent-ops-monitoring:latest
         imagePullPolicy: Never
         ports:
         - containerPort: 8502

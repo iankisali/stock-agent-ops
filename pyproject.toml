@@ -1,5 +1,5 @@
 [project]
-name = "mlops-pipeline"
+name = "stock-agent-ops"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"

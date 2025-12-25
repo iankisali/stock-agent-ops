@@ -1,12 +1,32 @@
 # 📈 MLOps Pipeline: End-to-End Weekly Stock Report Generation
 
-[![GitHub license](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/kmeanskaran/mlops-pipeline/blob/main/LICENSE)
+[![GitHub license](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/kmeanskaran/stock-agent-ops/blob/main/LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![Docker Compose](https://img.shields.io/badge/docker-compose-red.svg)](https://docs.docker.com/compose/)
 [![Feast](https://img.shields.io/badge/feature_store-Feast-orange.svg)](https://feast.dev/)
 [![MLflow](https://img.shields.io/badge/tracking-MLflow-blue.svg)](https://mlflow.org/)
 
 > **Design an end-to-end automated system for weekly stock market analysis using Transfer Learning (LSTM) and Agentic AI (LangGraph).**
+
+---
+
+## 🏗️ Clone & Local Setup
+
+### 1. Clone the Repository
+```bash
+git clone https://github.com/kmeanskaran/stock-agent-ops.git
+cd stock-agent-ops
+```
+
+### 2. Local Environment Setup (Using UV)
+We use `uv` for lightning-fast dependency management.
+```bash
+# Install uv if you haven't
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Sync dependencies and create venv
+uv sync
+```
 
 ---
 

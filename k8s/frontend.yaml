@@ -14,7 +14,7 @@ spec:
     spec:
       containers:
       - name: frontend
-        image: mlops-pipeline-frontend:latest
+        image: stock-agent-ops-frontend:latest
         imagePullPolicy: Never
         ports:
         - containerPort: 8501

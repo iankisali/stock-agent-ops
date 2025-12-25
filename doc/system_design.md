@@ -381,7 +381,7 @@ import dagshub
 import mlflow
 
 # Initialize DagsHub tracking
-dagshub.init(repo_owner="username", repo_name="mlops-pipeline", mlflow=True)
+dagshub.init(repo_owner="username", repo_name="stock-agent-ops", mlflow=True)
 
 # Set tracking URI
 mlflow.set_tracking_uri(os.getenv("MLFLOW_TRACKING_URI"))
@@ -1684,7 +1684,7 @@ curl -X POST http://localhost:8000/predict-child \
 ```bash
 # DagsHub/MLflow
 DAGSHUB_USER_NAME=your_username
-DAGSHUB_REPO_NAME=mlops-pipeline
+DAGSHUB_REPO_NAME=stock-agent-ops
 DAGSHUB_TOKEN=your_token
 MLFLOW_TRACKING_URI=https://dagshub.com/...
 
