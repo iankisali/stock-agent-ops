@@ -3,7 +3,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 import mlflow
 from src.config import Config
-from src.logger import get_logger
+from logger.logger import get_logger
 
 logger = get_logger()
 

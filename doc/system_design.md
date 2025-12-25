@@ -31,7 +31,7 @@ The **MLOps Stock Prediction Pipeline** is a production-grade, end-to-end machin
 ### 1.2 Key Features
 
 - **Transfer Learning Architecture**: Parent-Child model strategy reduces training time by 10-15%
-- **Real-time Predictions**: Sub-second inference with Redis caching (30-minute TTL)
+- **Real-time Predictions**: Sub-second inference with Redis caching (1-day TTL)
 - **AI-Powered Analysis**: Multi-agent LangGraph system for Bloomberg-style reports
 - **Auto-Healing**: Automatic model training when predictions are requested for new tickers
 - **Production Monitoring**: Prometheus + Grafana for metrics, Evidently AI for drift detection
@@ -348,8 +348,8 @@ features = [
 5. Point-in-time joins ensure no future data leakage
 
 **Storage**:
-- **Offline Store**: Parquet files (`feature_repo/data/features.parquet`)
-- **Registry**: SQLite database (`feature_repo/data/registry.db`)
+- **Offline Store**: Parquet files (`feature_store/data/features.parquet`)
+- **Registry**: SQLite database (`feature_store/data/registry.db`)
 - **Entity**: Ticker symbol with timestamp
 
 ---
@@ -409,7 +409,7 @@ with mlflow.start_run(run_name=f"train_{ticker}"):
 
 1. **Prediction Caching**
    - Key: `predict_child_{ticker}`
-   - TTL: 1800 seconds (30 minutes)
+   - TTL: 86400 seconds (1 day)
    - Value: JSON prediction data
 
 2. **Rate Limiting**
@@ -681,7 +681,7 @@ stock_features = FeatureView(
 **Materialization**:
 ```python
 # Materialize features for training
-feature_store = FeatureStore(repo_path="feature_repo")
+feature_store = FeatureStore(repo_path="feature_store")
 training_data = feature_store.get_historical_features(
     entity_df=entity_df,
     features=["stock_features:*"]
@@ -939,9 +939,7 @@ graph TB
 
 #### 4.3.2 Prediction Process
 
-**Step-by-Step**:
-
-1. **Cache Check**:
+**Prediction Caching**:
 ```python
 cache_key = f"predict_child_{ticker.lower()}"
 cached = redis_client.get(cache_key)
@@ -1011,7 +1009,7 @@ result = {
         "full_forecast": forecast
     }
 }
-redis_client.setex(cache_key, 1800, json.dumps(result))  # 30-min TTL
+redis_client.setex(cache_key, 86400, json.dumps(result))  # 1-day TTL
 ```
 
 #### 4.3.3 Auto-Training Logic

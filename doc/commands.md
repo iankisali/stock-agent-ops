@@ -186,7 +186,7 @@ curl -X POST http://localhost:8000/monitor/parent
 ## 📝 Important Notes
 
 - **Rate Limits**: Training (5/hour), Predictions (40/hour)
-- **Caching**: Predictions cached for 30 minutes
+- **Caching**: Predictions cached for 1 day
 - **Auto-Healing**: Missing models trigger automatic training
 - **Async Training**: Use `/status/{task_id}` to check progress
 - **Empty Outputs**: `/outputs` returns empty list if no models trained yet

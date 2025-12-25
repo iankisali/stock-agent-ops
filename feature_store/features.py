@@ -8,7 +8,7 @@ ticker = Entity(name="ticker", join_keys=["ticker"], value_type=ValueType.STRING
 # Define the source of the data (parquet file)
 stock_stats_source = FileSource(
     name="stock_stats_source",
-    path="/app/feature_repo/data/features.parquet",
+    path="/app/feature_store/data/features.parquet",
     timestamp_field="event_timestamp",
     created_timestamp_column="created_timestamp",
 )

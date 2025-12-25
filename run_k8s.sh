@@ -10,7 +10,7 @@ minikube start --driver=docker --cpus $CPUS --memory $MEMORY --disk-size $DISK
 
 echo "📦 Building Docker Images (on HOST for speed)..."
 # Build Backend
-docker build -t mlops-pipeline-fastapi:latest .
+docker build -t mlops-pipeline-fastapi:latest -f backend/Dockerfile .
 # Build Frontend
 docker build -t mlops-pipeline-frontend:latest -f frontend/Dockerfile frontend/
 # Build Monitoring

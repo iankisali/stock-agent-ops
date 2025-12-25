@@ -1,143 +1,170 @@
-# 📈 MLOps Stock Prediction Pipeline
+# 📈 MLOps Pipeline: End-to-End Weekly Stock Report Generation
 
-A production-ready MLOps system for predicting stock prices using **LSTM** networks and **Transfer Learning**. This project demonstrates an end-to-end machine learning lifecycle, from real-time data ingestion to scalable deployment on Kubernetes.
+[![GitHub license](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/kmeanskaran/mlops-pipeline/blob/main/LICENSE)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![Docker Compose](https://img.shields.io/badge/docker-compose-red.svg)](https://docs.docker.com/compose/)
+[![Feast](https://img.shields.io/badge/feature_store-Feast-orange.svg)](https://feast.dev/)
+[![MLflow](https://img.shields.io/badge/tracking-MLflow-blue.svg)](https://mlflow.org/)
 
----
-
-## 🎯 1. Problem Statement
-Stock market prediction is traditionally resource-intensive. Training deep learning models from scratch for every single ticker symbol is computationally expensive and slow.
-
-**Our Solution**:
-We implement a **Parent-Child Transfer Learning Strategy**:
-1.  **Parent Model**: A robust base model trained on a major index (e.g., `^GSPC` - S&P 500) to learn general market dynamics.
-2.  **Child Models**: Lightweight models for specific stocks (e.g., `GOOG`, `TSLA`) that "inherit" knowledge from the parent. This drastically reduces training time (by ~10-15%) and improves convergence on smaller datasets.
+> **Design an end-to-end automated system for weekly stock market analysis using Transfer Learning (LSTM) and Agentic AI (LangGraph).**
 
 ---
 
-## 🛠 2. Technology Stack
+## 🌟 Overview
 
-### Core ML & Backend
-*   **Framework**: PyTorch (LSTM Models)
-*   **API**: FastAPI (Async, High-performance)
-*   **Data Processing**: Pandas, NumPy, Scikit-Learn
+This project is a production-grade MLOps pipeline that automates the entire lifecycle of stock price prediction and financial reporting. It shifts from traditional monolithic ML scripts to a modular, scalable architecture using modern MLOps tools.
 
-### MLOps Infrastructure
-*   **Feature Store**: Feast (Offline/Online feature management)
-*   **Experiment Tracking**: MLflow & DagsHub
-*   **Vector Database**: Qdrant (Semantic memory for AI agents)
-*   **Caching**: Redis (Rate limiting & API caching)
-*   **Monitoring**: Prometheus & Grafana
-
-### Deployment
-*   **Containerization**: Docker & Docker Compose
-*   **Orchestration**: Kubernetes (EKS - AWS)
-*   **CI/CD**: GitHub Actions (planned)
+### Key Capabilities:
+- **🧠 Transfer Learning**: Uses a Parent-Child architecture (S&P 500 base model) to predict individual stock prices accurately with minimal data.
+- **🤖 Agentic AI**: A multi-agent system (LangGraph) that acts as a financial analyst, market expert, and editor to generate Bloomberg-quality reports.
+- **📖 Deep Learning & Design**: Explore the [In-depth System Design Guide](./doc/system_design.md) for a technical breakdown.
+- **⚡ Real-time Serving**: Low-latency predictions powered by FastAPI and Redis caching (1-day TTL).
+- **🍽️ Feature Store**: Consistent data management for training and serving using **Feast**.
+- **🔍 Observability**: Full-stack monitoring with Prometheus, Grafana, and Evidently AI for data drift detection.
 
 ---
 
-## 🔄 3. Project Lifecycle & Architecture
+## 🏗️ Technical Architecture
 
-The system operates in three main stages:
-
-### A. Data Ingestion & Feature Engineering
-*   Raw OHLCV data is fetched via `yfinance`.
-*   Technical indicators (RSI, MACD, Volume) are computed.
-*   **Feast** creates a point-in-time correct dataset to prevent data leakage.
-
-### B. Training Pipeline (The "Intelligence")
-1.  **Parent Training**: The system checks if the base model exists. If not, it automatically trains on the S&P 500.
-2.  **Transfer Learning**: When a prediction is requested for a new stock (e.g., Google), the system leverages the pre-trained Parent Model weights.
-3.  **Evaluation**: Models are evaluated on MSE, RMSE, and R² scores. Plots (Predictions vs Actuals) are automatically generated and logged to MLflow.
-
-### C. Inference Pipeline (The "Service")
-*   **Endpoint**: `/predict-child`
-*   **Logic**:
-    1.  Check Redis cache for recent predictions.
-    2.  Check if a model exists for the requested ticker.
-    3.  If missing, **trigger background training** immediately.
-    4.  Run inference and return forecast.
+```mermaid
+graph TB
+    subgraph "User Layer"
+        UI[Streamlit UI]
+        MON_UI[Monitoring Dashboard]
+    end
+    
+    subgraph "Logic Layer"
+        API[FastAPI Orchestrator]
+        TRAIN[Training Pipeline]
+        AGENT[LangGraph Agents]
+    end
+    
+    subgraph "Storage & Memory"
+        REDIS[(Redis Cache)]
+        QDRANT[(Qdrant Vector DB)]
+        FEAST[(Feast Feature Store)]
+        MLFLOW[DagsHub MLflow]
+    end
+    
+    UI --> API
+    API --> TRAIN
+    API --> AGENT
+    TRAIN --> FEAST
+    TRAIN --> MLFLOW
+    AGENT --> QDRANT
+    API --> REDIS
+```
 
 ---
 
-## 🛡 4. Edge Cases & Reliability
+## 🛠️ Tech Stack
 
-We handled several critical production scenarios:
-
-| Scenario | Handling Strategy |
+| Component | Technology |
 | :--- | :--- |
-| **Missing Model** | **Auto-Healing**: The API detects the missing model, returns a "Training Started" status, and launches a background job. |
-| **Cold Start (No Parent)** | If the Parent model is missing, the system recursively trains the Parent first, then the Child. |
-| **Data Gaps** | `yfinance` failures are caught, and the system falls back to cached features if available. |
-| **Rate Limiting** | Implemented customizable Rate Limiting (e.g., 5 requests/minute) using Redis to protect the API. |
-| **Concurrency** | Training runs are locked per-ticker to prevent multiple requests triggering duplicate training jobs. |
+| **Model** | PyTorch (LSTM) |
+| **LLM Engine** | Ollama (`gpt-oss:20b-cloud`) |
+| **Embeddings** | Ollama (`nomic-embed-text`) |
+| **AI Agents** | LangGraph, LangChain |
+| **Feature Store**| Feast |
+| **Registry** | MLflow (via DagsHub) |
+| **Vector DB** | Qdrant (Semantic Caching) |
+| **Cache** | Redis Stack |
+| **Backend** | FastAPI (Async) |
+| **Frontend** | Streamlit |
+| **Observability**| Prometheus, Grafana, Evidently AI |
 
 ---
 
-## 🚀 5. Usage Guide
+## 🚀 Quick Start
 
-### Option A: Local Deployment (Docker Compose)
-The easiest way to stand up the full stack (API, Redis, Qdrant, Grafana, MLflow).
+### 1. Prerequisites
+- [Docker & Docker Compose](https://docs.docker.com/get-docker/)
+- [Ollama](https://ollama.com/) (Running on host machine)
 
+### 2. Configure Environment
+Create a `.env` file in the root:
 ```bash
-# 1. Clone & Setup
-git clone <repo-url>
-cd mlops-pipeline
+# DagsHub Tracking
+DAGSHUB_USER_NAME=your_user
+DAGSHUB_REPO_NAME=your_repo
+DAGSHUB_TOKEN=your_token
+MLFLOW_TRACKING_URI=...
 
-# 2. Run the Stack
-docker-compose up --build
-
-# 3. Access Interfaces
-# - API Docs: http://localhost:8000/docs
-# - Frontend: http://localhost:8501
-# - Grafana:  http://localhost:3000
+# Ollama Endpoint
+OLLAMA_BASE_URL=http://host.docker.internal:11434
 ```
 
-### Option B: Cloud Deployment (AWS EKS)
-We support full scalable deployment on AWS.
-*   See **[`AWS.md`](./AWS.md)** for the detailed Kubernetes manifest and setup instructions.
+### 3. Spin up the Stack
+You can use the provided automation script to build and launch all services at once:
+
+```bash
+# Give execution permission
+chmod +x run_docker.sh
+
+# Run the deployment script
+./run_docker.sh
+```
+
+Alternatively, use pure Docker Compose:
+```bash
+docker-compose up --build -d
+```
+
+### 4. Access the Applications
+- **Streamlit UI**: `http://localhost:8501`
+- **Monitoring App**: `http://localhost:8502`
+- **API Docs**: `http://localhost:8000/docs`
+- **Grafana**: `http://localhost:3000` (admin/admin)
 
 ---
 
-## 🔌 6. API Reference (Curl Commands)
+## 🤖 Agentic AI Workflow
 
-### 1. Check System Status
-Monitor the health of background training jobs.
-```bash
-curl -X 'GET' \
-  'http://localhost:8000/status' \
-  -H 'accept: application/json'
-```
+The system employs 4 specialized agents coordinated by **LangGraph**:
 
-### 2. Predict / Train (Child Model)
-If the model exists, returns prediction. If not, triggers training.
-```bash
-curl -X 'POST' \
-  'http://localhost:8000/predict-child' \
-  -H 'Content-Type: application/json' \
-  -d '{
-  "ticker": "GOOG",
-  "days": 7
-}'
-```
+1. **Performance Analyst**: Interprets raw LSTM forecasts and technical indicators.
+2. **Market Expert**: Scrapes latest news and sentiment using Yahoo Finance tools.
+3. **Report Generator**: Synthesizes data into a professional financial markdown report.
+4. **Critic**: Reviews the output for consistency and logic before final serving.
 
-### 3. Predict Parent (Base Model)
-Direct access to the S&P 500 model.
-```bash
-curl -X 'POST' \
-  'http://localhost:8000/predict-parent' \
-  -H 'Content-Type: application/json' \
-  -d '{
-  "days": 5
-}'
-```
+**Semantic Caching**: Reports are embedded and stored in **Qdrant**. If a similar query (95%+ match) is requested within 24 hours, the system serves the cached report instantly.
 
-### 4. Interactive AI Agent
-Chat with the market analyst agent (requires Qdrant memory).
-```bash
-curl -X 'POST' \
-  'http://localhost:8000/agent/chat' \
-  -H 'Content-Type: application/json' \
-  -d '{
-  "query": "What is the sentiment for Google based on recent performance?"
-}'
-```
+---
+
+## 📊 MLOps Practices
+
+- **Auto-Healing**: The API detects missing models and triggers training automatically.
+- **Model Registry**: Every training run is logged to DagsHub with artifacts (scalers, plots, metrics).
+- **Drift Detection**: Evidently AI runs scheduled checks to detect feature drift in stock data.
+- **Transfer Learning**:
+  - `Parent`: Trained on `^GSPC` (S&P 500)
+  - `Child`: Fine-tuned on specific tickers like `NVDA`, `AAPL`, or `GOOG`.
+
+---
+
+## 🤝 Connect & Support
+
+If you find this project helpful, let's connect!
+
+<a href="https://x.com/@kmeasnskaran" target="_blank">
+    <img src="https://img.shields.io/badge/X-000000?style=for-the-badge&logo=x&logoColor=white" alt="X"/>
+</a>
+<a href="https://linkedin.com/in/kmeanskaran" target="_blank">
+    <img src="https://img.shields.io/badge/LinkedIn-0077B5?style=for-the-badge&logo=linkedin&logoColor=white" alt="LinkedIn"/>
+</a>
+<a href="https://kmeanskaran.substack.com" target="_blank">
+    <img src="https://img.shields.io/badge/Substack-FF6719?style=for-the-badge&logo=substack&logoColor=white" alt="Substack"/>
+</a>
+<a href="https://buymeacoffee.com/kmeanskaran" target="_blank">
+    <img src="https://img.shields.io/badge/Buy_Me_A_Coffee-FFDD00?style=for-the-badge&logo=buy-me-a-coffee&logoColor=black" alt="Buy Me A Coffee"/>
+</a>
+
+---
+
+## 📜 License
+
+Distributed under the MIT License. See `LICENSE` for more information.
+
+---
+
+Created with ❤️ by **Karan**

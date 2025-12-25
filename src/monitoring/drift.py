@@ -5,7 +5,7 @@ import numpy as np
 import yfinance as yf
 from datetime import datetime, timedelta
 from typing import Dict, Any, Optional
-from src.logger import get_logger
+from logger.logger import get_logger
 
 logger = get_logger()
 

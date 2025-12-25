@@ -2,6 +2,9 @@ import time
 from fastapi import HTTPException
 from functools import wraps
 
+# Setup to import redis_client from backend.state to avoid circular deps with main
+# But this file imports from it, so main shouldn't import this at top level if this imports main
+# In this refactor, we import redis_client from state.
 
 def simple_rate_limit(redis_client, key: str, limit: int, window_sec: int):
     """
@@ -30,18 +33,13 @@ def rate_limit(limit: int, window_sec: int, key_prefix: str = ""):
 
     - Works on async FastAPI endpoints.
     - Supports per-ticker rate limiting when the request body contains "ticker".
-    - Dynamically imports `redis_client` from main app to avoid circular import.
-
-    Usage:
-
-        @rate_limit(limit=1, window_sec=3600, key_prefix="train_child")
-        async def endpoint(...)
     """
     def decorator(func):
         @wraps(func)
         async def wrapper(*args, **kwargs):
-            # Late import to avoid circular dependencies
-            from main import redis_client
+            # Late import to avoid circular dependencies if necessary, 
+            # or import from state.
+            from backend.state import redis_client
 
             # Only apply limiter if Redis is available
             if redis_client:

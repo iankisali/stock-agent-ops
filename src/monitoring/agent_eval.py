@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import Dict, Any
 
 from src.agents.graph import analyze_stock
-from src.logger import get_logger
+from logger.logger import get_logger
 
 logger = get_logger()
 

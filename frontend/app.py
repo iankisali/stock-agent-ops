@@ -287,10 +287,6 @@ if run_btn:
     with tab_report:
         if report:
             st.markdown(report)
-            
-            # Download
-            b = io.BytesIO(report.encode("utf-8"))
-            st.download_button("Download Report", data=b, file_name=f"{ticker}_Report.md", mime="text/markdown")
         else:
             st.warning("No report content generated.")
             

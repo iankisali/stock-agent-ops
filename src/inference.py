@@ -4,7 +4,7 @@ from typing import Dict
 # import onnxruntime as ort
 from sklearn.preprocessing import StandardScaler
 from src.config import Config
-from src.logger import get_logger
+from logger.logger import get_logger
 from src.exception import PipelineError
 
 logger = get_logger()

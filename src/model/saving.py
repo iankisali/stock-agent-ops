@@ -5,7 +5,7 @@ import mlflow
 from sklearn.preprocessing import StandardScaler
 from src.exception import PipelineError
 
-from src.logger import get_logger
+from logger.logger import get_logger
 
 logger = get_logger()
 

@@ -1,99 +1,237 @@
-# 🚀 AWS MLOps Deployment: Complete "Zero-to-Hero" Guide
+# AWS EKS Deployment Guide: Minimal & Cost-Effective
 
-This guide is designed for someone who has **zero AWS experience**. We will go from having just an AWS account to a full Kubernetes Cluster with CI/CD, staying under a **$10 budget**.
+This guide covers deploying the MLOps pipeline to AWS EKS (Kubernetes) using a "Minimal Viable Infrastructure" approach. We will use **Terraform** for infrastructure, **GitHub Actions** for CI/CD, and **ECR** for images.
 
 ---
 
-## 1. 🛠 The "Pre-Flight" Setup (Do this first)
+## 1. Prerequisites
+Ensure you have these CLI tools installed:
+*   `aws` (AWS CLI v2)
+*   `kubectl` (Kubernetes CLI)
+*   `terraform` (Infrastructure as Code)
+*   `docker` (For local builds)
 
-If you've never used AWS, follow these exact steps:
+**Configure AWS:**
+```bash
+aws configure
+# Enter Access Key, Secret Key, Region (e.g., us-east-1)
+```
 
-1.  **Create an AWS Account:** Go to [aws.amazon.com](https://aws.amazon.com) and sign up. You will need a Credit/Debit card for verification.
-2.  **Create an IAM User (Security):** 
-    *   Search for **IAM** in the AWS Console.
-    *   Create a user named `mlops-admin`.
-    *   Attach the policy: `AdministratorAccess`.
-    *   Go to **Security Credentials** and create an **Access Key**. Save the `Access Key ID` and `Secret Access Key` safely!
-3.  **Install Tools on your Mac:**
+---
+
+## 2. Infrastructure (Terraform vs. Eksctl)
+*Question: Do I need Helm?*
+**Answer**: No. For this project, standard Kubernetes manifests (`.yaml` files) are sufficient. Helm is great for packaging but adds complexity you don't need yet.
+
+*Question: How to use Terraform?*
+**Answer**: We will use a minimal Terraform configuration to spawn a VPC and EKS Cluster.
+
+### A. Instance Selection (LSTM Project)
+Since you are running LSTM (PyTorch), Redis, Qdrant, and FastAPI on the same cluster:
+*   **Recommended**: `t3.xlarge` (4 vCPU, 16 GB RAM).
+    *   *Why?* Sufficient memory for Qdrant/Redis + Model loading. Cost-effective.
+*   **Alternative (Performance)**: `m5.large` or `g4dn.xlarge` (if GPU is mandatory, but expensive).
+*   **Recommendation**: Start with **Run on CPU** (`t3.xlarge`) for the 1-2 hour demo to keep costs under $1.
+
+### B. Minimal Terraform Setup
+Create a file `infra/main.tf`:
+
+```hcl
+provider "aws" {
+  region = "us-east-1"
+}
+
+module "vpc" {
+  source = "terraform-aws-modules/vpc/aws"
+  name = "mlops-vpc"
+  cidr = "10.0.0.0/16"
+  azs = ["us-east-1a", "us-east-1b"]
+  public_subnets = ["10.0.1.0/24", "10.0.2.0/24"]
+}
+
+module "eks" {
+  source          = "terraform-aws-modules/eks/aws"
+  cluster_name    = "mlops-cluster"
+  cluster_version = "1.27"
+  vpc_id          = module.vpc.vpc_id
+  subnet_ids      = module.vpc.public_subnets
+
+  eks_managed_node_groups = {
+    one = {
+      min_size     = 1
+      max_size     = 2
+      desired_size = 1
+      instance_types = ["t3.xlarge"]
+      key_name       = "my-ssh-key" # Optional: ensure this key pair exists in AWS
+    }
+  }
+}
+```
+
+**Run Infrastructure:**
+```bash
+cd infra
+terraform init
+terraform apply -auto-approve
+# ⏳ Takes ~15 minutes
+```
+
+**Connect kubectl to EKS:**
+```bash
+aws eks update-kubeconfig --region us-east-1 --name mlops-cluster
+```
+
+---
+
+## 3. Container Registry (ECR)
+We need a place to store your Docker images.
+
+1.  **Create Repository:**
     ```bash
-    brew install awscli terraform helm kubectl
-    aws configure
-    # Enter your Access Key, Secret Key, and region (e.g., us-east-1)
+    aws ecr create-repository --repository-name mlops-backend
+    aws ecr create-repository --repository-name mlops-frontend
+    ```
+2.  **Login:**
+    ```bash
+    aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin <AWS_ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com
     ```
 
 ---
 
-## 2. 🏗 Phase 1: Infrastructure (Terraform)
+## 4. CI/CD: GitHub Actions
+Automate building and pushing images upon code push.
+Create `.github/workflows/deploy.yml`:
 
-Terraform is a script that "orders" your servers. It ensures you don't miss any steps.
+```yaml
+name: Deploy to EKS
 
-### Why this is cheap ($):
-*   **Spot Instances:** We use `m5.large` Spot instances. They are 70% cheaper than normal servers.
-*   **Deploy & Destroy:** We stand up the cluster, record the video, and destroy it immediately.
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v1
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: us-east-1
+
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v1
+
+    - name: Build and push Backend
+      env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        ECR_REPOSITORY: mlops-backend
+        IMAGE_TAG: latest
+      run: |
+        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+
+    - name: Update KubeConfig
+      run: aws eks update-kubeconfig --name mlops-cluster --region us-east-1
+
+    - name: Deploy to EKS
+      run: |
+        kubectl apply -f k8s/
+        kubectl rollout restart deployment/fastapi-deployment
+```
 
 ---
 
-## 3. 🤖 Phase 2: Automation (GitHub Actions)
+## 5. Storage Strategy (S3 & Outputs)
+*Question: Logic for outputs/ dir?*
 
-You don't want to manually upload code. We use GitHub Actions to do it for you.
+In a container (`Pod`), files in `/app/outputs` are lost when the Pod restarts.
+**Solution**: Use separate storage.
 
-1.  **GitHub Secrets:** Go to your GitHub Repo > Settings > Secrets.
-2.  Add: `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`.
-3.  Now, every time you `git push`, GitHub will:
-    *   Build your Docker image.
-    *   Push it to **AWS ECR** (Elastic Container Registry).
-    *   Tell **AWS EKS** (Kubernetes) to update your app.
-
----
-
-## 4. 📦 Phase 3: The "S3 Trick" for Models
-
-In MLOps, models are large. Keeping them inside Kubernetes is bad practice.
-*   We use the **AWS S3 CSI Driver**.
-*   It mounts an S3 bucket to your pod at `/app/outputs`.
-*   **The Result:** When your Python code runs `torch.save(model, "outputs/model.pt")`, the file is **instantly uploaded to AWS S3**. This is how real-world AI companies store models.
-
----
-
-## 🎬 The "Showcase" Script (Follow this for your Video)
-
-### 1. Preparation (Start of Video)
-"Today we are deploying our Stock Pipeline to the cloud."
-```bash
-cd terraform/
-terraform apply --auto-approve
-```
-*(Wait 10-15 mins for EKS to boot. Great time to explain the architecture!)*
-
-### 2. Deployment
-"I'm pushing a code change now."
-```bash
-git add .
-git commit -m "Optimize LSTM layers"
-git push origin main
-```
-*(Show the GitHub Actions tab in the browser — it looks very professional for a video.)*
-
-### 3. Verification & S3
-"The app is live on AWS. Let's trigger training."
-```bash
-# Get the AWS LoadBalancer URL
-kubectl get svc fastapi-service
-# Trigger training
-curl -X POST http://<AWS-URL>/train-parent
-```
-**The "WOW" Moment:** Open your S3 bucket in the browser and refresh. Show the audience the model files appearing there. This proves the pipeline works from end-to-end.
-
-### 4. Cleanup (End of Video)
-"Always destroy your infra to save money."
-```bash
-terraform destroy --auto-approve
-```
-**Total Cost:** ~$0.50. Perfect.
+1.  **S3 (Recommended for Artifacts)**:
+    Since you already use **MLflow (DagsHub)**, your models (`.pt`) and metrics should ideally go there. This is the cleanest MLOps approach.
+    
+2.  **S3 Sync (Minimal approach for 'outputs/')**:
+    If you specifically want files in `outputs/` synced to a private S3 bucket:
+    *   Create a bucket: `aws s3 mb s3://my-mlops-outputs`
+    *   Give your Node Group IAM role permission to write to S3.
+    *   Update `main.py` code to upload on completion:
+        ```python
+        import boto3
+        s3 = boto3.client('s3')
+        s3.upload_file("outputs/model.pt", "my-mlops-outputs", "model.pt")
+        ```
+    
+3.  **Quick Fix (PVC)**:
+    In your `k8s/deployment.yaml`, mount an AWS EBS volume to `/app/outputs`. This persists data as long as the Volume exists (even if Pod crashes).
 
 ---
 
-## ⚠️ Beginner Pitfalls to Avoid
-*   **Regions:** Always stay in one region (e.g., `us-east-1`).
-*   **Cleanup:** If you forget to run `terraform destroy`, AWS will keep billing you!
-*   **NVIDIA:** Only use `g4dn` instances if you really need a GPU for the video. Regular CPUs are 10x cheaper for simple LSTM models.
+## 6. Deploying Kubernetes Manifests
+Run manually (or via GitHub Actions):
+
+```bash
+# 1. Apply Secrets (Env vars)
+kubectl apply -f k8s/secrets.yaml
+
+# 2. Deploy Services (Redis, Qdrant first)
+kubectl apply -f k8s/redis-deployment.yaml
+kubectl apply -f k8s/qdrant-deployment.yaml
+
+# 3. Deploy App
+kubectl apply -f k8s/fastapi-deployment.yaml
+kubectl apply -f k8s/frontend-deployment.yaml
+kubectl apply -f k8s/ingress.yaml
+```
+
+*Question: Networking?*
+*   **Load Balancer**: When you apply a Service of `type: LoadBalancer` (or Ingress with ALB Controller), AWS automatically creates a Classic or Network Load Balancer. It costs ~$0.025/hour.
+*   **Access**: You will get a DNS name (e.g., `a45...us-east-1.elb.amazonaws.com`) to access your Streamlit UI.
+
+---
+
+## 7. Cost Estimate (1-2 Hours)
+
+If you run this setup for just 2 hours:
+
+| Resource | Logic | Est. Cost |
+| :--- | :--- | :--- |
+| **EKS Control Plane** | $0.10/hr × 2 | $0.20 |
+| **EC2 (t3.xlarge)** | $0.16/hr × 2 | $0.32 |
+| **Load Balancer** | $0.025/hr × 2 | $0.05 |
+| **EBS Volume** | 20GB ($0.08/GB/mo) / 720hrs * 2 | < $0.01 |
+| **Data Transfer** | Minimal | < $0.01 |
+| **TOTAL** | | **~ $0.60 USD** |
+
+*Note: EKS clusters are billed pro-rata but have no startup fee.*
+
+---
+
+## 8. Pause, Destroy, Rebuild
+
+**To Pause (Stop Billing for Compute):**
+```bash
+# Scale nodes to 0 (Stops EC2 cost, keeps EKS control plane cost)
+kubectl scale deployment --all --replicas=0
+# Update terraform node group min_size = 0
+```
+*Warning: EKS Control Plane ($0.10/hr) charges continue even if nodes are 0.*
+
+**To Destroy (Stop ALL Billing):**
+```bash
+# Delete Services first (removes Load Balancers)
+kubectl delete -f k8s/
+
+# Destroy Infra
+cd infra
+terraform destroy -auto-approve
+```
+
+**To Rebuild:**
+1.  `cd infra && terraform apply`
+2.  `aws eks update-kubeconfig...`
+3.  `kubectl apply -f k8s/`

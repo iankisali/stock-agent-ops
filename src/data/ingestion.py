@@ -62,7 +62,7 @@ def fetch_ohlcv(ticker: str, start: str = Config().start_date, end: Optional[str
             feast_df["created_timestamp"] = datetime.now()
             
             # Save to parquet
-            repo_path = os.path.join(os.getcwd(), "feature_repo")
+            repo_path = os.path.join(os.getcwd(), "feature_store")
             data_path = os.path.join(repo_path, "data", "features.parquet")
             os.makedirs(os.path.dirname(data_path), exist_ok=True)
             
@@ -108,7 +108,7 @@ def fetch_ohlcv(ticker: str, start: str = Config().start_date, end: Optional[str
                 ])
                 # Wait, store.apply() expects a list of objects (Entity, FeatureView).
                 # It doesn't auto-scan like the CLI.
-                # So subprocess IS actually simpler for auto-scanning 'feature_repo/features.py'.
+                # So subprocess IS actually simpler for auto-scanning 'feature_store/features.py'.
                 # Let's keep subprocess for 'apply' but use store for 'materialize'.
                 pass
             except:

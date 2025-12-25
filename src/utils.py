@@ -8,7 +8,7 @@ import mlflow
 from typing import Dict
 from src.config import Config
 from src.exception import PipelineError
-from src.logger import get_logger
+from logger.logger import get_logger
 from dotenv import load_dotenv
 
 

@@ -23,7 +23,7 @@ mlartifacts/
 # Logs and outputs
 logs/
 outputs/
-feature_repo/data/
+feature_store/data/
 
 # OS files
 .DS_Store

@@ -8,7 +8,7 @@ services:
   fastapi:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: backend/Dockerfile
     container_name: fastapi
     ports:
       - "8000:8000"
@@ -27,8 +27,8 @@ services:
       - ./outputs:/app/outputs
       - ./mlruns:/app/mlruns
       - ./mlartifacts:/app/mlartifacts
-      - ./feature_repo:/app/feature_repo
-    command: uvicorn main:app --host 0.0.0.0 --port 8000 --workers 4
+      - ./feature_store:/app/feature_store
+    command: uvicorn backend.main:app --host 0.0.0.0 --port 8000 --workers 4
 
   redis:
     image: redis/redis-stack:latest

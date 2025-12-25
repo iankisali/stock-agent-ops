@@ -8,7 +8,7 @@ from src.config import Config
 from src.data.ingestion import fetch_ohlcv
 # from src.utils import save_json
 # from src.saving import load_model
-from src.logger import get_logger
+from logger.logger import get_logger
 # import onnxruntime as ort
 import pandas as pd
 from sklearn.preprocessing import StandardScaler

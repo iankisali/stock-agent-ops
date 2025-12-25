@@ -12,7 +12,7 @@ from src.model.definition import LSTMModel
 from src.config import Config
 from src.data.ingestion import fetch_ohlcv
 from src.inference import predict_one_step_and_week
-from src.logger import get_logger
+from logger.logger import get_logger
 from src.exception import PipelineError
 
 logger = get_logger()
@@ -21,7 +21,7 @@ cfg = Config()
 # Initialize Feast Feature Store (Lazy Load)
 def get_feature_store():
     try:
-        return FeatureStore(repo_path="feature_repo")
+        return FeatureStore(repo_path="feature_store")
     except Exception as e:
         logger.warning(f"Feast Feature Store not initialized: {e}")
         return None

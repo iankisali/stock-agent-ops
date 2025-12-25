@@ -14,7 +14,7 @@ from src.model.definition import LSTMModel
 from src.model.training import fit_model
 from src.model.evaluation import evaluate_model_temp
 from src.utils import setup_dagshub_mlflow
-from src.logger import get_logger
+from logger.logger import get_logger
 from src.exception import PipelineError
 from mlflow.tracking import MlflowClient
 

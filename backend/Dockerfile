@@ -1,5 +1,5 @@
 # Use an official Python runtime as a parent image
-FROM python:3.11-slim
+FROM python:3.13-slim
 
 # Set working directory
 WORKDIR /app
@@ -17,13 +17,15 @@ RUN pip install uv
 ENV ORT_LOGGING_LEVEL=ERROR
 
 # Copy project files
+# We expect the build context to be the project root
 COPY . /app
 
 # Install dependencies via uv (system-wide)
 RUN uv pip install --system -r requirements.txt
 
-# Expose the FastAPI poxrt
+# Expose the FastAPI port
 EXPOSE 8000
 
 # Run the FastAPI app with Uvicorn
+# Updated entry point
 CMD ["python", "main.py"]

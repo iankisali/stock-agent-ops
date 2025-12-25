@@ -27,5 +27,5 @@ outputs/
 # No data 
 /data/
 *.db 
-grafana/plugins/*
+grafana/
 
