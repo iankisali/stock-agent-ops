@@ -32,8 +32,19 @@ st.title("📊 Monitoring Dashboard")
 with st.sidebar:
     st.header("Diagnostic Tools")
     
-    # 1. Parent Health Button
-    if st.button("🏥 Parent Model Health (^GSPC)", use_container_width=True, type="primary"):
+    # 1. Parent Training & Health
+    st.subheader("🛠️ Parent Management")
+    if st.button("🏗️ Master Train Parent (^GSPC)", use_container_width=True, help="Priming the root model (requires ~1-2 mins)"):
+        try:
+            t_resp = requests.post(f"{API_URL}/train-parent")
+            if t_resp.status_code == 200:
+                st.success("Training Started! Task: parent_training")
+            else:
+                st.error(f"Error: {t_resp.text}")
+        except:
+            st.error("API Offline")
+
+    if st.button("🏥 Run Parent Health Audit", use_container_width=True):
         st.session_state.current_ticker = "^GSPC"
         st.session_state.do_monitor = True
 
@@ -49,15 +60,23 @@ with st.sidebar:
             st.error("Input ticker first")
 
     st.markdown("---")
-    # 3. Simple Logs
-    with st.expander("📝 System Logs"):
-        if st.button("Refresh Logs"):
-            try:
-                l_resp = requests.get(f"{API_URL}/system/logs?lines=30")
-                if l_resp.status_code == 200:
-                    st.code(l_resp.json().get("logs", "N/A"), language="text")
-            except:
-                st.error("API Offline")
+    st.markdown("---")
+    # 3. Enhanced Logs
+    st.subheader("📝 System Logs")
+    num_lines = st.slider("Lines", 10, 200, 50)
+    if st.button("🔄 Refresh Logs", use_container_width=True):
+        try:
+            l_resp = requests.get(f"{API_URL}/system/logs?lines={num_lines}")
+            if l_resp.status_code == 200:
+                log_data = l_resp.json()
+                st.session_state.logs = log_data.get("logs", "N/A")
+                st.session_state.log_file = log_data.get("filename", "N/A")
+        except:
+            st.error("API Offline")
+    
+    if "logs" in st.session_state:
+        st.caption(f"File: {st.session_state.get('log_file')}")
+        st.code(st.session_state.logs, language="text")
 
 # Main Content
 if "current_ticker" in st.session_state:
@@ -85,6 +104,8 @@ if "current_ticker" in st.session_state:
     
     with col_a:
         st.subheader("🤖 Agent Integrity")
+        
+        # Check if we just ran a monitor and we have it in memory, or if it's on disk
         eval_json = os.path.join(path_base, "agent_eval", "latest_eval.json")
         if os.path.exists(eval_json):
             with open(eval_json, "r") as f:
@@ -92,19 +113,29 @@ if "current_ticker" in st.session_state:
                 m = d.get("metrics", {})
                 
                 # Big Score
-                st.metric("Trust Score", f"{m.get('overall_score', 0)*100:.0f}%", 
-                          delta=m.get("status", "N/A"))
+                score = m.get('overall_score', 0)
+                status_label = m.get("status", "N/A")
+                st.metric("Trust Score", f"{score*100:.0f}%", delta=status_label)
                 
                 # Check Details
                 st.write("**Assessment Details:**")
                 checks = m.get("checks", {})
-                for k, v in checks.items():
-                    st.markdown(f"{'✅' if v else '❌'} {k.replace('_',' ').title()}")
+                if not checks:
+                    st.warning("No heuristic checks performed. Agent might be in training or error state.")
+                else:
+                    cols = st.columns(len(checks))
+                    for i, (k, v) in enumerate(checks.items()):
+                        with cols[i]:
+                            st.markdown(f"{'✅' if v else '❌'}\n\n**{k.replace('_',' ').title()}**")
                 
-                with st.expander("Show Agent Output Preview"):
-                    st.info(d.get("output_preview_text", "No preview")[:500] + "...")
+                st.markdown("---")
+                with st.expander("🔍 View Final Report Analysis"):
+                    report_text = d.get("output_preview_text", "No preview available")
+                    if "status" in report_text and "training" in report_text:
+                         st.warning("⚠️ Agent reported model training in progress. Evaluation is a placeholder.")
+                    st.markdown(report_text)
         else:
-            st.info("Run monitoring to see agent evaluation.")
+            st.info("No audit logs found for this ticker. Run 'Quality Check' to initiate.")
 
     if col_b:
         with col_b:

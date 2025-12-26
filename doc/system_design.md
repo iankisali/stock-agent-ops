@@ -1012,7 +1012,11 @@ result = {
 redis_client.setex(cache_key, 86400, json.dumps(result))  # 1-day TTL
 ```
 
-#### 4.3.3 Auto-Training Logic
+#### 4.3.3 Auto-Training Logic (Synchronous Chaining)
+
+**New Mechanism**: When auto-training is triggered, the system uses a **chaining mechanism** (`chain_fn`) to ensure that prediction and caching happen *immediately* after the model training is finished, **within the same background task**.
+
+This ensures that when the client (Agent or User) polls `/status` and sees `completed`, the prediction data is **guaranteed** to be in Redis.
 
 ```python
 @router.post("/predict-child")
@@ -1021,31 +1025,34 @@ async def predict_child_endpoint(request: Request, response: Response):
     ticker = data.get("ticker", "").strip().upper()
     
     try:
-        # Attempt prediction
-        result = predict_child(ticker)
+        # 1. Attempt prediction (Check Cache -> Check Model -> Predict)
+        def get_preds():
+            # Tries to get from Redis, else loads model and predicts
+            return get_or_set_cache(f"predict_child_{ticker.lower()}", lambda: predict_child(ticker))
+            
+        result, _ = await run_blocking_fn(get_preds)
         return {"result": result}
     
-    except FileNotFoundError:
-        # Model doesn't exist
-        logger.info(f"Model missing for {ticker}, triggering auto-training")
+    except (FileNotFoundError, PipelineError):
+        # 2. Model Missing -> Trigger Training + Chained Prediction
+        logger.info(f"Model missing for {ticker}, triggering auto-training.")
         
-        # Check if already training
         task_id = ticker.lower()
-        status = get_task_status_redis(task_id)
         
-        if status and status.get("status") == "running":
-            response.status_code = 202
-            return {
-                "status": "training",
-                "detail": "Training in progress. Please retry later."
-            }
+        # Define the chained task: Predict & Cache immediately after training
+        def chain_predict():
+            logger.info(f"Auto-predicting for {ticker} after training...")
+            # This populates Redis so the next request is a CACHE HIT
+            get_or_set_cache(f"predict_child_{ticker.lower()}", lambda: predict_child(ticker), expire=86400)
+
+        # Start the background task with the chain function
+        await run_training(task_id, train_child, ticker, chain_fn=chain_predict)
         
-        # Start training
-        await run_training(task_id, train_child, ticker)
         response.status_code = 202
         return {
-            "status": "training_started",
-            "detail": f"Model for {ticker} missing. Training started."
+            "status": "training",
+            "detail": f"Model for {ticker} missing. Training started (with auto-prediction).",
+            "task_id": task_id
         }
 ```
 

@@ -8,6 +8,9 @@ from datetime import datetime
 from langchain_core.messages import SystemMessage, AIMessage
 
 from src.agents.tools import get_stock_predictions, get_stock_news, TOOLS_LIST
+from logger.logger import get_logger
+
+logger = get_logger()
 
 
 # LLM setup (Ollama)
@@ -33,14 +36,29 @@ except Exception as e:
 # --------------------------------------------------------------------------
 def performance_analyst_node(state: dict) -> dict:
     ticker = state["ticker"]
-    
-    predictions = state.get("predictions")  # <--- USE what analyze_stock already fetched
+    predictions = state.get("predictions")
+    logger.info(f"📈 [Agent: Performance] Analyzing trends for {ticker}")
 
     if predictions == "__MODEL_TRAINING__":
+        logger.warning(f"⚠️ [Agent: Performance] Model for {ticker} is still training.")
         return {
-            "messages": [],
-            "predictions": "__MODEL_TRAINING__"
+            "messages": [AIMessage(content=f"Model for {ticker} is currently training.")],
+            "predictions": predictions
         }
+    
+    prompt = f"""
+    You are a Performance Analyst. Analyze the 7-day price forecast for {ticker}.
+    DATA:
+    {predictions}
+    
+    Give a concise 2-3 line summary of the projected trend (Bullish/Bearish/Side-ways) and the price range.
+    """
+    resp = llm.invoke([SystemMessage(content=prompt)])
+    
+    return {
+        "messages": [resp],
+        "predictions": predictions
+    }
 
 
 # --------------------------------------------------------------------------
@@ -48,6 +66,7 @@ def performance_analyst_node(state: dict) -> dict:
 # --------------------------------------------------------------------------
 def market_expert_node(state: dict) -> dict:
     ticker = state["ticker"]
+    logger.info(f"🗞️ [Agent: Market Expert] Fetching and summarizing news for {ticker}")
     news = get_stock_news(ticker)
 
     prompt = f"""
@@ -71,6 +90,7 @@ Return a 3–5 line sentiment summary.
 # --------------------------------------------------------------------------
 def report_generator_node(state: dict) -> dict:
     ticker = state["ticker"]
+    logger.info(f"📝 [Agent: Report Gen] Assembling Bloomberg-style report for {ticker}")
     predictions = state.get("predictions", "")
     news = state.get("news_sentiment", "")
 
@@ -119,6 +139,8 @@ def critic_node(state: dict) -> dict:
     Criticizes and refines the report. 
     It checks for consistency between predictions and recommendation.
     """
+    ticker = state.get("ticker", "N/A")
+    logger.info(f"⚖️ [Agent: Critic] Reviewing and refining report for {ticker}")
     current_report = state.get("final_report", "")
     predictions = state.get("predictions", "")
     

@@ -35,7 +35,10 @@ def setup_dagshub_mlflow():
                     dagshub.auth.add_app_token(dagshub_token)
                     logger.info("✓ Added DagsHub app token")
                 except Exception as e:
-                    logger.warning(f"Failed to add DagsHub token: {e}")
+                    if "File exists" in str(e):
+                        logger.info("✓ DagsHub app token already exists")
+                    else:
+                        logger.warning(f"Failed to add DagsHub token: {e}")
 
             # Initialize DagsHub
             dagshub.init(repo_owner=dagshub_user, repo_name=dagshub_repo, mlflow=True)

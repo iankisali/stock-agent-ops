@@ -74,12 +74,19 @@ def get_task_status_redis(task_id: str) -> Optional[Dict[str, Any]]:
         logger.error(f"Failed to get task status for {task_id}: {e}")
     return None
 
-async def run_training_worker(task_id: str, fn, *args):
+async def run_training_worker(task_id: str, fn, *args, chain_fn=None):
     """Actual training worker (runs in thread pool)."""
     loop = asyncio.get_event_loop()
     start_time = time.time()
     try:
         result = await loop.run_in_executor(executor, fn, *args)
+
+        if chain_fn:
+            logger.info(f"Task {task_id}: Training complete, running chained task...")
+            # Run the chained function (e.g., prediction & caching)
+            await loop.run_in_executor(executor, chain_fn)
+            logger.info(f"Task {task_id}: Chained task complete.")
+
         duration = time.time() - start_time
         TRAINING_DURATION.labels(task_id).observe(duration)
         
@@ -103,7 +110,7 @@ async def run_blocking_fn(fn, *args):
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(executor, fn, *args)
 
-async def run_training(task_id: str, fn, *args):
+async def run_training(task_id: str, fn, *args, chain_fn=None):
     """Start training in background and return immediately."""
     task_id = task_id.lower()
     
@@ -119,4 +126,4 @@ async def run_training(task_id: str, fn, *args):
     TRAINING_STATUS.labels(task_id).set(1)
     
     # Spawn background task
-    asyncio.create_task(run_training_worker(task_id, fn, *args))
+    asyncio.create_task(run_training_worker(task_id, fn, *args, chain_fn=chain_fn))

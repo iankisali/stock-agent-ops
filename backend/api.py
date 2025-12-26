@@ -26,6 +26,15 @@ from src.exception import PipelineError
 logger = get_logger()
 router = APIRouter()
 BASE_PATH = "outputs"
+cfg = Config()
+
+def check_model_exists(ticker: str, model_type: str = "child") -> bool:
+    """Check if model file exists on disk."""
+    if model_type == "parent":
+        path = os.path.join(cfg.parent_dir, f"{cfg.parent_ticker}_parent_model.pt")
+    else:
+        path = os.path.join(cfg.workdir, ticker.upper(), f"{ticker.upper()}_child_model.pt")
+    return os.path.exists(path)
 
 # =========================================================
 # Core Routes
@@ -106,6 +115,11 @@ def analyze(req: AnalyzeRequest):
 async def train_parent_endpoint():
     """Trigger parent model training."""
     task_id = "parent_training"
+    
+    # Check if Parent Model already exists
+    if check_model_exists("parent", "parent"):
+        return {"status": "completed", "task_id": task_id, "detail": "Parent model already exists"}
+
     if get_task_status_redis(task_id) and get_task_status_redis(task_id).get("status") == "running":
          return {"status": "already running", "task_id": task_id}
          
@@ -136,11 +150,20 @@ async def train_child_endpoint(request: Request):
              if parent_status and parent_status.get("status") == "running":
                  return {"status": "started_parent", "task_id": "parent_training", "detail": "Parent model missing. Training parent first."}
     
+    # Check if Child Model already exists
+    if check_model_exists(ticker, "child"):
+        return {"status": "completed", "task_id": task_id, "detail": "Model already exists"}
+
     curr_status = get_task_status_redis(task_id)
     if curr_status and curr_status.get("status") == "running":
         return {"status": "running", "task_id": task_id, "detail": "Training already in progress"}
 
-    await run_training(task_id, train_child, ticker)
+    def chain_predict():
+        # Chain prediction and caching after training
+        logger.info(f"Auto-predicting for {ticker} after training...")
+        get_or_set_cache(f"predict_child_{ticker.lower()}", lambda: predict_child(ticker), expire=86400)
+
+    await run_training(task_id, train_child, ticker, chain_fn=chain_predict)
     return {"status": "started", "task_id": task_id}
 
 # =========================================================
@@ -183,14 +206,28 @@ async def predict_child_endpoint(request: Request, response: Response):
         if "Missing" in str(e) or "not found" in str(e):
             logger.info(f"Model missing for {ticker}, triggering auto-training.")
             
+            # Check if Parent Model exists
+            if not check_model_exists("parent", "parent"):
+                logger.warning("Parent model missing. Triggering parent training first.")
+                parent_status = get_task_status_redis("parent_training")
+                if not parent_status or parent_status.get("status") != "completed":
+                    await run_training("parent_training", train_parent)
+                    response.status_code = 202
+                    return {"status": "training", "detail": "Parent model missing. Training parent first.", "task_id": "parent_training"}
+
             status = get_task_status_redis(task_id)
             if status and status.get("status") == "running":
                  response.status_code = 202
-                 return {"status": "training", "detail": "Training in progress. Please retry later."}
+                 return {"status": "training", "detail": "Training in progress. Please retry later.", "task_id": task_id}
             
-            await run_training(task_id, train_child, ticker)
+            def chain_predict():
+                # Chain prediction and caching after training
+                logger.info(f"Auto-predicting for {ticker} after auto-training...")
+                get_or_set_cache(f"predict_child_{ticker.lower()}", lambda: predict_child(ticker), expire=86400)
+
+            await run_training(task_id, train_child, ticker, chain_fn=chain_predict)
             response.status_code = 202
-            return {"status": "training_started", "detail": f"Model for {ticker} missing. Training started."}
+            return {"status": "training", "detail": f"Model for {ticker} missing. Training started (with auto-prediction).", "task_id": task_id}
             
         raise HTTPException(500, str(e))
     except Exception as e:
@@ -207,8 +244,26 @@ async def get_task_status(task_id: str):
         tid = "parent_training"
         
     status = get_task_status_redis(tid)
+    
+    # Check disk as fallback or confirmation
+    # For parents, tid is 'parent_training', but we want to check '^GSPC'
+    # For children, tid is 'aapl'
+    ticker_for_disk = "parent" if tid == "parent_training" else tid.upper()
+    model_type = "parent" if tid == "parent_training" else "child"
+    file_exists = check_model_exists(ticker_for_disk, model_type)
+
     if not status:
+        if file_exists:
+             return {"status": "completed", "detail": "Model file found on disk", "task_id": task_id}
         raise HTTPException(404, f"Task '{task_id}' not found.")
+    
+    # If status is not 'completed' or 'failed' but file exists, 
+    # it might be a race condition or a previous run. 
+    # But if it's 'running', we should probably stick to 'running'.
+    # If status is not 'running' or 'failed' but file exists (e.g. status expired or some intermediate state), 
+    # we can assume 'completed'. But do NOT override 'failed'.
+    if status.get("status") not in ["running", "failed"] and file_exists:
+        status["status"] = "completed"
     
     response = status.copy()
     if response.get("status") == "running" and "start_time" in response:
@@ -322,36 +377,85 @@ def get_eval_result(ticker: str):
 
 @router.delete("/system/reset")
 def reset_system():
-    """Wipe all system data."""
+    """Wipe all system data and reset for a fresh start."""
+    results = {}
     try:
+        # 1. Reset Redis
         if redis_client:
-            redis_client.flushall()
-            logger.info("✅ Redis flushed")
+            try:
+                redis_client.flushall()
+                results["redis"] = "✅ Flushed"
+                logger.info("✅ Redis flushed")
+            except Exception as e:
+                results["redis"] = f"❌ Failed: {e}"
+        else:
+            results["redis"] = "Skipped (Not connected)"
             
-        from src.memory.semantic_cache import SemanticCache
-        mem = SemanticCache(host="qdrant", port=6333)
-        mem.client.delete_collection(mem.collection_name)
-        mem._ensure_collection()
-        logger.info("✅ Qdrant wiped")
+        # 2. Reset Qdrant (Semantic Cache)
+        try:
+            from src.memory.semantic_cache import SemanticCache
+            # Initialize with default env logic
+            mem = SemanticCache() 
+            collections = [c.name for c in mem.client.get_collections().collections]
+            if mem.collection_name in collections:
+                mem.client.delete_collection(mem.collection_name)
+            mem._ensure_collection() # Re-create empty
+            results["qdrant"] = "✅ Collection wiped and recreated"
+            logger.info("✅ Qdrant wiped")
+        except Exception as e:
+            results["qdrant"] = f"❌ Failed: {e}"
 
-        repo_path = os.path.join(os.getcwd(), "feature_store")
-        data_path = os.path.join(repo_path, "data")
-        for file in ["registry.db", "features.parquet"]:
-             p = os.path.join(data_path, file)
-             if os.path.exists(p):
-                 os.remove(p)
-                 logger.info(f"✅ Deleted Feast file: {p}")
+        # 3. Reset Feast Registry & Data
+        try:
+            repo_path = os.path.join(os.getcwd(), "feature_store")
+            files_to_remove = [
+                os.path.join(repo_path, "data", "registry.db"),
+                os.path.join(repo_path, "data", "features.parquet"),
+                os.path.join(repo_path, "registry.db"), # Fallback location
+                os.path.join(repo_path, "online_store.db") # Sometimes created locally
+            ]
+            removed_feast = []
+            for p in files_to_remove:
+                 if os.path.exists(p):
+                     os.remove(p)
+                     removed_feast.append(os.path.basename(p))
+            results["feast"] = f"✅ Removed: {', '.join(removed_feast)}" if removed_feast else "✅ Nothing to remove"
+            logger.info(f"✅ Feast cleanup: {removed_feast}")
+        except Exception as e:
+            results["feast"] = f"❌ Failed: {e}"
 
-        import shutil
-        if os.path.exists(BASE_PATH):
-            shutil.rmtree(BASE_PATH)
-            os.makedirs(BASE_PATH)
-            logger.info(f"✅ Wiped and recreated outputs directory: {BASE_PATH}")
+        # 4. Wipe Outputs (Models, Plots, etc)
+        try:
+            import shutil
+            if os.path.exists(BASE_PATH):
+                # Cannot remove the root dir itself if it is a mount (Device or resource busy).
+                # Instead, remove all contents inside it.
+                for item in os.listdir(BASE_PATH):
+                    item_path = os.path.join(BASE_PATH, item)
+                    try:
+                        if os.path.isdir(item_path):
+                            shutil.rmtree(item_path)
+                        else:
+                            os.remove(item_path)
+                    except Exception as e:
+                        logger.error(f"Failed to delete {item_path}: {e}")
+                
+                results["outputs"] = "✅ Wiped all files in outputs directory"
+                logger.info(f"✅ Cleared outputs directory: {BASE_PATH}")
+            else:
+                os.makedirs(BASE_PATH, exist_ok=True)
+                results["outputs"] = "✅ Created missing outputs directory"
+        except Exception as e:
+            results["outputs"] = f"❌ Failed: {e}"
 
-        return {"status": "System Reset Complete", "details": "Redis flushed, Qdrant emptied, Feast registry/data wiped, Outputs directory cleared."}
+        return {
+            "status": "System Reset Complete",
+            "timestamp": datetime.now().isoformat(),
+            "details": results
+        }
     except Exception as e:
-        logger.error(f"Reset failed: {e}")
-        raise HTTPException(500, f"Reset failed: {e}")
+        logger.error(f"Global reset failed: {e}")
+        raise HTTPException(500, f"Critical reset failure: {e}")
 
 @router.get("/system/cache")
 def inspect_cache(ticker: Optional[str] = None):
