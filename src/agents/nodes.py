@@ -5,6 +5,7 @@ Agent nodes for:
 - final Bloomberg-style report
 """
 from datetime import datetime
+import os
 from langchain_core.messages import SystemMessage, AIMessage
 
 from src.agents.tools import get_stock_predictions, get_stock_news, TOOLS_LIST
@@ -20,7 +21,7 @@ try:
     llm = ChatOllama(
         model="gpt-oss:20b-cloud",
         temperature=0.3,
-        base_url="http://host.docker.internal:11434"
+        base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
     ).bind_tools(TOOLS_LIST)
 
 except Exception as e:
@@ -54,6 +55,8 @@ def performance_analyst_node(state: dict) -> dict:
     Give a concise 2-3 line summary of the projected trend (Bullish/Bearish/Side-ways) and the price range.
     """
     resp = llm.invoke([SystemMessage(content=prompt)])
+    content = resp.content if hasattr(resp, "content") else str(resp)
+    logger.info(f"DEBUG: Perf Output: {content[:100]}...")
     
     return {
         "messages": [resp],
@@ -78,6 +81,8 @@ News:
 Return a 3–5 line sentiment summary.
 """
     resp = llm.invoke([SystemMessage(content=prompt)])
+    content = resp.content if hasattr(resp, "content") else str(resp)
+    logger.info(f"DEBUG: News Output: {content[:100]}...")
 
     return {
         "messages": [resp],
@@ -107,6 +112,7 @@ End with: **Market Stance:** BULLISH/BEARISH/NEUTRAL | **Confidence:** High/Medi
 """
     resp = llm.invoke([SystemMessage(content=prompt)])
     text = resp.content if hasattr(resp, "content") else str(resp)
+    logger.info(f"DEBUG: Report Gen Output: {text[:100]}...")
 
     # Extract stance
     upper = text.upper()
@@ -164,6 +170,7 @@ def critic_node(state: dict) -> dict:
     
     resp = llm.invoke([SystemMessage(content=prompt)])
     final_text = resp.content if hasattr(resp, "content") else str(resp)
+    logger.info(f"DEBUG: Critic Output: {final_text[:100]}...")
 
     # We treat the critic's output as the definitive 'final_report'
     return {

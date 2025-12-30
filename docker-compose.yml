@@ -15,6 +15,7 @@ services:
     environment:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434
 
     env_file:
       - .env

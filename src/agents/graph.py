@@ -57,7 +57,7 @@ def analyze_stock(ticker: str, thread_id: str = None):
     embedder = None
     if OllamaEmbeddings:
         try:
-            ollama_url = os.getenv("OLLAMA_BASE_URL", "http://host.docker.internal:11434")
+            ollama_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
             embedder = OllamaEmbeddings(
                 model="nomic-embed-text", 
                 base_url=ollama_url
